@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { deleteTrip, getHistory, imgProxy, planTripStream, type HistoryFilter, type PlanStage } from '@/services/api'
+import { deleteTrip, getHistory, imgProxy, planJobPoll, type HistoryFilter, type PlanStage } from '@/services/api'
 import type { TripRequest, TripSummary } from '@/types'
 
 const router = useRouter()
@@ -119,8 +119,9 @@ async function handleSubmit() {
   loadingTitle.value = '正在连接规划服务…'
 
   try {
-    // SSE 流式规划：进度条与文案来自后端各 Agent 的真实完成事件，不再模拟
-    const plan = await planTripStream({ ...form, destination: form.destination.trim() }, (s: PlanStage) => {
+    // 异步规划任务：进度条与文案来自后端各 Agent 的真实完成事件；
+    // 任务在服务端后台执行，即使关闭页面，完成后行程也会自动入历史
+    const plan = await planJobPoll({ ...form, destination: form.destination.trim() }, (s: PlanStage) => {
       if (s.message) loadingTitle.value = s.message
       const p = STAGE_PERCENT[s.stage]
       if (p) progressPercent.value = p
@@ -227,7 +228,7 @@ onMounted(() => {
           class="loading-progress"
         />
         <p class="loading-title">{{ loadingTitle }}</p>
-        <p class="loading-hint">四个智能体正在协作，通常需要 10~90 秒，请稍候…</p>
+        <p class="loading-hint">任务在后台执行，通常需要 10~90 秒；中途关闭页面行程也不会丢</p>
       </div>
     </a-modal>
 

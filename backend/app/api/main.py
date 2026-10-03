@@ -12,8 +12,10 @@ import asyncio
 import hashlib
 import json
 import logging
-import queue
+import re
+import secrets
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from logging.handlers import RotatingFileHandler
@@ -25,7 +27,7 @@ logger = logging.getLogger(__name__)
 import httpx
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..agents.mcp_tool import MCPError
@@ -322,212 +324,222 @@ def _request_hash(request: TripRequest) -> str:
     return hashlib.md5(src.encode()).hexdigest()
 
 
-@app.post("/api/trip/plan", response_model=TripPlan)
-async def create_trip_plan(request: TripRequest):
-    """生成完整行程计划。
+class PlanJobError(Exception):
+    """规划编排中前端可见的失败（status + 可读消息）。"""
 
-    - 未配置密钥或 DEMO_MODE=true 时返回演示数据；
-    - 真实模式依次执行：景点搜索 → 天气查询 → 酒店推荐 → 行程规划（多 Agent 协作），
-      成功后自动写入 MySQL 历史库；
-    - 相同请求正在规划中时拒绝重复提交（Redis 规划锁）；
-    - 相同请求 24h 内有成功结果时直接复用（结果缓存，含图片增强）。
+    def __init__(self, status: int, detail: str):
+        self.status = status
+        self.detail = detail
+        super().__init__(detail)
+
+
+_DEMO_STAGES = [
+    ("started", "演示模式开始", 0.2),
+    ("attractions", "景点搜索完成，共 12 个候选（演示）", 0.4),
+    ("weather", "目的地天气预报已获取（演示）", 0.4),
+    ("hotel", "酒店候选已就绪（演示）", 0.4),
+    ("planning", "正在整合候选信息，规划每日行程…", 0.5),
+    ("planned", "行程初稿已生成", 0.2),
+    ("validating", "正在校验行程合理性…", 0.2),
+    ("validated", "校验通过", 0.1),
+    ("images", "正在补充实景配图", 0.2),
+]
+
+
+def _plan_execute(request: TripRequest, progress=None) -> TripPlan:
+    """规划执行主体：结果缓存 → 流水线 → 图片增强 → 入库 → 结果写缓存。
+
+    并发闸门与规划锁由调用方持有；同步阻塞，必须在 _pipeline_executor 中运行。
+    progress(stage, message, extra) 透传各阶段真实进度。
     """
-    demo = settings.demo_mode or not settings.ready_for_agents
-    if demo:
-        await asyncio.sleep(1.5)  # 模拟多 Agent 处理耗时，让前端进度条可感知
-        start_dates = _resolve_dates(request)
-        return build_demo_plan(start_dates)
+    def notify(stage, message, extra=None):
+        if progress:
+            try:
+                progress(stage, message, extra)
+            except Exception:  # noqa: BLE001
+                logger.warning("进度回调异常（忽略）", exc_info=True)
 
-    loop = asyncio.get_running_loop()
     request_hash = _request_hash(request)
-    lock_key = f"plan:lock:{request_hash}"
     result_key = f"plan:result:{request_hash}"
-
-    # 存储初始化提前：结果缓存与规划锁都依赖 Redis（_get_store 内部吞异常，不会抛出）
-    store = await loop.run_in_executor(_io_executor, _get_store)
+    store = _get_store()
 
     # 结果缓存命中：直接返回上次成功结果（已含图片增强与 trip_id），零成本
     if store and _cache:
-        cached = await loop.run_in_executor(_io_executor, _cache.get, result_key)
+        cached = _cache.get(result_key)
         if cached:
             try:
                 logger.info("结果缓存命中: %s", result_key)
+                notify("started", "结果缓存命中，直接复用上次规划")
                 return TripPlan.model_validate(json.loads(cached))
             except Exception:  # noqa: BLE001
                 logger.warning("结果缓存解析失败，重新规划", exc_info=True)
 
-    # 并发闸门：拿不到许可快速失败；拿到则无论结果如何都在 finally 释放
-    acquired = _plan_gate.acquire(blocking=False)
-    if not acquired:
-        raise HTTPException(status_code=429, detail="系统正在规划其他行程，请稍后再试。")
+    plan = get_planner(settings).plan(request, progress=notify)
 
-    lock_token: str | None = None
+    notify("images", "正在为景点/餐厅/酒店补充实景配图")
     try:
-        if store and _cache:
-            allowed, lock_token = await loop.run_in_executor(_io_executor, _cache.acquire_lock, lock_key, 300)
-            if not allowed:
-                raise HTTPException(status_code=409, detail="相同的规划请求正在处理中，请稍候再试。")
-
-        plan = await loop.run_in_executor(_pipeline_executor, get_planner(settings).plan, request)
-    except HTTPException:
-        raise
-    except PlannerError as e:
-        # PlannerError 是面向用户的可读消息（前端一直按此展示）；异常链进服务端日志
-        logger.warning("规划流水线失败: %s", e, exc_info=e.__cause__)
-        raise HTTPException(status_code=500, detail=str(e))
+        _enrich_images(plan)
     except Exception:  # noqa: BLE001
-        # 未预期异常不外泄内部细节，详情看服务端日志
-        logger.exception("行程规划未预期失败")
-        raise HTTPException(status_code=500, detail="行程规划失败，请稍后重试（详情见服务端日志）")
-    finally:
-        _plan_gate.release()
-        if store:
-            await loop.run_in_executor(_io_executor, _cache.release_lock, lock_key, lock_token)
-
-    # 图片增强串行打几十个外部 HTTP 请求（最长可达数分钟），必须在 IO 线程池执行，
-    # 否则会把整个事件循环（其他所有请求）卡住
-    await loop.run_in_executor(_io_executor, _enrich_images, plan)
+        logger.warning("图片增强失败（跳过）", exc_info=True)
 
     # 自动入库（失败不影响返回，历史功能降级）
     if store:
         try:
-            plan.trip_id = await loop.run_in_executor(_io_executor, store.save, request, plan)
+            plan.trip_id = store.save(request, plan)
         except StorageUnavailable:
             logger.warning("MySQL 不可用，本次行程未入历史库")
         # 结果入缓存（已含增强图与 trip_id；写失败不影响返回）
-        await loop.run_in_executor(_io_executor, _cache.set, result_key, plan.model_dump_json(), RESULT_TTL)
-
+        _cache.set(result_key, plan.model_dump_json(), RESULT_TTL)
     return plan
 
 
-def _sse(name: str, payload: dict) -> bytes:
-    return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
+def _plan_full(request: TripRequest, progress=None) -> TripPlan:
+    """同步完整规划：demo 分支 + 结果缓存 + 并发闸门 + 规划锁 + 执行。"""
+    demo = settings.demo_mode or not settings.ready_for_agents
+    if demo:
+        if progress:
+            for stage, message, delay in _DEMO_STAGES:
+                progress(stage, message)
+                time.sleep(delay)
+        return build_demo_plan(_resolve_dates(request))
+
+    lock_key = f"plan:lock:{_request_hash(request)}"
+    store = _get_store()
+
+    # 并发闸门：拿不到许可快速失败；拿到则无论结果如何都在 finally 释放
+    if not _plan_gate.acquire(blocking=False):
+        raise PlanJobError(429, "系统正在规划其他行程，请稍后再试。")
+    lock_token: str | None = None
+    try:
+        if store and _cache:
+            allowed, lock_token = _cache.acquire_lock(lock_key, 300)
+            if not allowed:
+                raise PlanJobError(409, "相同的规划请求正在处理中，请稍候再试。")
+        return _plan_execute(request, progress)
+    except PlanJobError:
+        raise
+    except PlannerError as e:
+        # PlannerError 是面向用户的可读消息（前端一直按此展示）；异常链进服务端日志
+        logger.warning("规划流水线失败: %s", e, exc_info=e.__cause__)
+        raise PlanJobError(500, str(e)) from e
+    except Exception:  # noqa: BLE001
+        # 未预期异常不外泄内部细节，详情看服务端日志
+        logger.exception("行程规划未预期失败")
+        raise PlanJobError(500, "行程规划失败，请稍后重试（详情见服务端日志）") from None
+    finally:
+        _plan_gate.release()
+        if store:
+            _cache.release_lock(lock_key, lock_token)
 
 
-_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+@app.post("/api/trip/plan", response_model=TripPlan)
+async def create_trip_plan(request: TripRequest):
+    """同步生成完整行程计划（连接挂住直到完成；前端建议用 /async 版本）。
+
+    - 未配置密钥或 DEMO_MODE=true 时返回演示数据；
+    - 相同请求 24h 内有成功结果时直接复用（结果缓存，含图片增强）；
+    - 相同请求正在规划中时 409；系统繁忙时 429。
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(_pipeline_executor, _plan_full, request)
+    except PlanJobError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
 
 
-@app.post("/api/trip/plan/stream")
-async def create_trip_plan_stream(request: TripRequest):
-    """SSE 流式规划：与 POST /api/trip/plan 语义一致，但按阶段推送真实进度。
+def _job_key(job_id: str) -> str:
+    return f"plan:job:{job_id}"
 
-    事件流：progress(stage/message/count) × N → done(plan) | error(message)。
-    限流、并发闸门、结果缓存、规划锁冲突在流开始前以普通 HTTP 状态码返回，
-    前端 fetch 可像普通请求一样读取错误详情。
+
+def _write_job(job_id: str, state: dict) -> None:
+    """任务状态写 Redis（TTL 与结果缓存一致，24h 自动过期）。"""
+    if _cache:
+        _cache.set(_job_key(job_id), json.dumps(state, ensure_ascii=False), RESULT_TTL)
+
+
+@app.post("/api/trip/plan/async")
+async def submit_plan_job(request: TripRequest):
+    """异步规划：立即返回 job_id，进度与结果经 GET /api/trip/jobs/{job_id} 轮询。
+
+    - 客户端断开不影响任务执行；结果 24h 内可取（Redis）；
+    - 限流、闸门、规划锁冲突在提交时同步以 HTTP 状态码返回（429/409）；
+    - Redis 不可用时降级为同步执行：响应 {"mode": "sync", "plan": {...}}。
     """
     demo = settings.demo_mode or not settings.ready_for_agents
     loop = asyncio.get_running_loop()
-
-    if demo:
-        async def demo_gen():
-            for stage, message, delay in [
-                ("started", "演示模式开始", 0.2),
-                ("attractions", "景点搜索完成，共 12 个候选（演示）", 0.5),
-                ("weather", "目的地天气预报已获取（演示）", 0.5),
-                ("hotel", "酒店候选已就绪（演示）", 0.5),
-                ("planning", "正在整合候选信息，规划每日行程…", 0.6),
-                ("planned", "行程初稿已生成", 0.3),
-                ("validating", "正在校验行程合理性…", 0.3),
-                ("validated", "校验通过", 0.2),
-                ("images", "正在补充实景配图", 0.3),
-            ]:
-                yield _sse("progress", {"stage": stage, "message": message})
-                await asyncio.sleep(delay)
-            yield _sse("done", {"plan": build_demo_plan(_resolve_dates(request)).model_dump()})
-
-        return StreamingResponse(demo_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
-
-    request_hash = _request_hash(request)
-    lock_key = f"plan:lock:{request_hash}"
-    result_key = f"plan:result:{request_hash}"
     store = await loop.run_in_executor(_io_executor, _get_store)
 
-    # 结果缓存命中：立即发 done 事件（流式版零成本路径）
-    if store and _cache:
-        cached = await loop.run_in_executor(_io_executor, _cache.get, result_key)
-        if cached:
-            try:
-                plan = TripPlan.model_validate(json.loads(cached))
-                logger.info("结果缓存命中(流式): %s", result_key)
+    # Redis 不可用：任务队列无从谈起，降级为同步执行（保持旧体验）
+    if _cache is None:
+        try:
+            plan = await loop.run_in_executor(_pipeline_executor, _plan_full, request)
+            return {"mode": "sync", "plan": plan}
+        except PlanJobError as e:
+            raise HTTPException(status_code=e.status, detail=e.detail)
 
-                async def cached_gen(plan=plan):
-                    yield _sse("progress", {"stage": "started", "message": "结果缓存命中，直接复用上次规划"})
-                    yield _sse("done", {"plan": plan.model_dump()})
-
-                return StreamingResponse(cached_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
-            except Exception:  # noqa: BLE001
-                logger.warning("结果缓存解析失败，重新规划", exc_info=True)
-
-    # 闸门与规划锁都在流开始前获取：冲突时能以 HTTP 状态码明确返回
-    acquired = _plan_gate.acquire(blocking=False)
-    if not acquired:
-        raise HTTPException(status_code=429, detail="系统正在规划其他行程，请稍后再试。")
+    # 闸门与规划锁在提交时同步获取：冲突立即反馈；由后台任务持有至执行结束
     lock_token: str | None = None
-    if store and _cache:
-        allowed, lock_token = await loop.run_in_executor(_io_executor, _cache.acquire_lock, lock_key, 300)
-        if not allowed:
-            _plan_gate.release()
-            raise HTTPException(status_code=409, detail="相同的规划请求正在处理中，请稍候再试。")
+    if not demo:
+        if not _plan_gate.acquire(blocking=False):
+            raise HTTPException(status_code=429, detail="系统正在规划其他行程，请稍后再试。")
+        if store and _cache:
+            allowed, lock_token = await loop.run_in_executor(
+                _io_executor, _cache.acquire_lock, f"plan:lock:{_request_hash(request)}", 300
+            )
+            if not allowed:
+                _plan_gate.release()
+                raise HTTPException(status_code=409, detail="相同的规划请求正在处理中，请稍候再试。")
 
-    events: queue.Queue = queue.Queue()
-    plan_holder: dict[str, TripPlan] = {}
-    error_holder: dict[str, str] = {}
-    finished = object()
+    job_id = secrets.token_hex(12)
+    _write_job(job_id, {"job_id": job_id, "status": "pending", "message": "已受理，等待调度"})
 
     def progress(stage: str, message: str, extra: dict | None = None) -> None:
-        events.put(("progress", {"stage": stage, "message": message, **(extra or {})}))
+        _write_job(job_id, {"job_id": job_id, "status": "running", "stage": stage, "message": message, **(extra or {})})
 
-    def run_pipeline() -> None:
+    def run() -> None:
         try:
-            plan_holder["plan"] = get_planner(settings).plan(request, progress=progress)
-        except PlannerError as e:
-            logger.warning("规划流水线失败: %s", e, exc_info=e.__cause__)
-            error_holder["message"] = str(e)
+            if demo:
+                for stage, message, delay in _DEMO_STAGES:
+                    progress(stage, message)
+                    time.sleep(delay)
+                plan = build_demo_plan(_resolve_dates(request))
+            else:
+                plan = _plan_execute(request, progress)
+            _write_job(job_id, {"job_id": job_id, "status": "succeeded", "stage": "done",
+                                "message": "规划完成", "plan": plan.model_dump()})
+        except PlanJobError as e:
+            _write_job(job_id, {"job_id": job_id, "status": "failed", "error": e.detail})
         except Exception:  # noqa: BLE001
-            logger.exception("行程规划未预期失败")
-            error_holder["message"] = "行程规划失败，请稍后重试（详情见服务端日志）"
+            logger.exception("异步规划未预期失败")
+            _write_job(job_id, {"job_id": job_id, "status": "failed",
+                                "error": "行程规划失败，请稍后重试（详情见服务端日志）"})
         finally:
-            events.put(finished)
+            if not demo:
+                _plan_gate.release()
+                if lock_token:
+                    _cache.release_lock(f"plan:lock:{_request_hash(request)}", lock_token)
 
-    async def stream():
-        try:
-            yield _sse("progress", {"stage": "started", "message": "已受理，多智能体流水线启动"})
-            task = loop.run_in_executor(_pipeline_executor, run_pipeline)
-            while True:
-                try:
-                    item = events.get_nowait()
-                except queue.Empty:
-                    await asyncio.sleep(0.15)
-                    continue
-                if item is finished:
-                    break
-                name, payload = item
-                yield _sse(name, payload)
-            await task
+    loop.run_in_executor(_pipeline_executor, run)
+    return {"mode": "job", "job_id": job_id}
 
-            if error_holder:
-                yield _sse("error", {"message": error_holder["message"]})
-                return
 
-            plan = plan_holder["plan"]
-            yield _sse("progress", {"stage": "images", "message": "正在为景点/餐厅/酒店补充实景配图"})
-            try:
-                await loop.run_in_executor(_io_executor, _enrich_images, plan)
-            except Exception:  # noqa: BLE001
-                logger.warning("图片增强失败（跳过）", exc_info=True)
-            if store:
-                try:
-                    plan.trip_id = await loop.run_in_executor(_io_executor, store.save, request, plan)
-                except StorageUnavailable:
-                    logger.warning("MySQL 不可用，本次行程未入历史库")
-                await loop.run_in_executor(_io_executor, _cache.set, result_key, plan.model_dump_json(), RESULT_TTL)
-            yield _sse("done", {"plan": plan.model_dump()})
-        finally:
-            _plan_gate.release()
-            if store and _cache:
-                _cache.release_lock(lock_key, lock_token)
+_JOB_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 
-    return StreamingResponse(stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+@app.get("/api/trip/jobs/{job_id}")
+async def get_plan_job(job_id: str):
+    """查询异步规划任务状态。
+
+    pending/running（含 stage/message/count）→ succeeded（含完整 plan）/ failed（含 error）。
+    """
+    if _cache is None:
+        raise HTTPException(status_code=503, detail="任务状态存储（Redis）不可用")
+    if not _JOB_ID_RE.fullmatch(job_id):
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    raw = await asyncio.get_running_loop().run_in_executor(_io_executor, _cache.get, _job_key(job_id))
+    if not raw:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    return json.loads(raw)
 
 
 # ---------- 历史与作品集 ----------

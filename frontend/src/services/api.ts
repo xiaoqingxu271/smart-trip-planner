@@ -67,7 +67,7 @@ export async function planTrip(data: TripRequest): Promise<TripPlan> {
   return request.post('/trip/plan', data)
 }
 
-// ---------- 流式规划（SSE）：按阶段推送真实进度 ----------
+// ---------- 异步规划任务：提交 → 轮询进度 → 取结果 ----------
 
 export interface PlanStage {
   stage: string
@@ -75,78 +75,52 @@ export interface PlanStage {
   count?: number
 }
 
-/**
- * POST + fetch 流读取的 SSE 消费：保留 JSON 请求体与访问码头，
- * 限流/锁冲突等错误在流开始前以普通 HTTP 状态码返回，可直接解析 detail。
- */
-export async function planTripStream(
+export interface PlanJobState {
+  job_id: string
+  status: 'pending' | 'running' | 'succeeded' | 'failed'
+  stage?: string
+  message?: string
+  count?: number
+  plan?: TripPlan
+  error?: string
+}
+
+/** 提交异步规划任务。Redis 不可用时后端降级为同步执行（mode=sync 直接带结果）。 */
+export async function submitPlanJob(
   data: TripRequest,
-  onStage: (s: PlanStage) => void,
-): Promise<TripPlan> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  const code = getAccessCode()
-  if (code) headers['X-Access-Code'] = code
+): Promise<{ mode: 'job'; job_id: string } | { mode: 'sync'; plan: TripPlan }> {
+  return request.post('/trip/plan/async', data)
+}
 
-  const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), 300000) // 5 分钟兜底
-  let resp: Response
-  try {
-    resp = await fetch('/api/trip/plan/stream', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(data),
-      signal: controller.signal,
-    })
-  } catch (e) {
-    window.clearTimeout(timeout)
-    throw new Error('无法连接规划服务，请确认后端已启动')
+/**
+ * 高层封装：提交 + 每 1.5s 轮询 + 阶段回调，成功返回行程。
+ * 任务在后台执行，轮询期间关闭页面不影响服务端继续跑。
+ */
+export async function planJobPoll(data: TripRequest, onStage: (s: PlanStage) => void): Promise<TripPlan> {
+  const sub = await submitPlanJob(data)
+  if (sub.mode === 'sync') {
+    onStage({ stage: 'done', message: '规划完成' })
+    return sub.plan
   }
 
-  if (!resp.ok || !resp.body) {
-    window.clearTimeout(timeout)
-    if (resp.status === 401) {
-      localStorage.removeItem(ACCESS_CODE_KEY)
-      if (!window.location.pathname.startsWith('/login')) window.location.href = '/login'
-    }
-    let detail = `HTTP ${resp.status}`
+  const deadline = Date.now() + 10 * 60 * 1000
+  let lastStage = ''
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1500))
+    let state: PlanJobState
     try {
-      const j = await resp.json()
-      detail = typeof j.detail === 'string' ? j.detail : detail
-    } catch { /* 非 JSON 错误体 */ }
-    throw new Error(detail)
-  }
-
-  try {
-    const reader = resp.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let plan: TripPlan | null = null
-    let streamError: string | null = null
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let idx: number
-      while ((idx = buffer.indexOf('\n\n')) >= 0) {
-        const raw = buffer.slice(0, idx)
-        buffer = buffer.slice(idx + 2)
-        const lines = raw.split('\n')
-        const event = lines.find((l) => l.startsWith('event: '))?.slice(7) ?? 'message'
-        const dataLine = lines.find((l) => l.startsWith('data: '))
-        if (!dataLine) continue
-        const payload = JSON.parse(dataLine.slice(6))
-        if (event === 'progress') onStage(payload as PlanStage)
-        else if (event === 'done') plan = payload.plan as TripPlan
-        else if (event === 'error') streamError = String(payload.message ?? '规划失败')
-      }
+      state = await request.get(`/trip/jobs/${sub.job_id}`)
+    } catch {
+      continue // 单次轮询失败（网络抖动/瞬时错误）继续重试
     }
-    if (streamError) throw new Error(streamError)
-    if (!plan) throw new Error('规划流提前结束，未收到结果')
-    return plan
-  } finally {
-    window.clearTimeout(timeout)
+    if (state.status === 'running' && state.stage && state.stage !== lastStage) {
+      lastStage = state.stage
+      onStage({ stage: state.stage, message: state.message, count: state.count })
+    }
+    if (state.status === 'succeeded') return state.plan as TripPlan
+    if (state.status === 'failed') throw new Error(state.error || '规划失败')
   }
+  throw new Error('规划超时（超过 10 分钟），任务仍在后台执行，完成后可在「最近规划」中查看')
 }
 
 export async function getAppConfig(): Promise<AppConfig> {

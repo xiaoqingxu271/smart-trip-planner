@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # replan 本质是另一条触发完整流水线的路，分开限会被绕。
 _EXACT_RULES: dict[tuple[str, str], str] = {
     ("POST", "/api/trip/plan"): "heavy",
-    ("POST", "/api/trip/plan/stream"): "heavy",
+    ("POST", "/api/trip/plan/async"): "heavy",
     ("POST", "/api/trip/replan"): "heavy",
     ("POST", "/api/utils/geocode"): "geo",
     ("GET", "/api/utils/image"): "img",
