@@ -1,0 +1,823 @@
+"""FastAPI 应用入口。
+
+启动（在 backend 目录下）::
+
+    uvicorn app.api.main:app --reload
+
+交互式文档: http://localhost:8000/docs
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from urllib.parse import quote, urlparse
+
+logger = logging.getLogger(__name__)
+
+import httpx
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
+
+from ..agents.mcp_tool import MCPError
+from ..agents.trip_planner import PlannerError, get_planner
+from ..config import get_settings
+from ..models.schemas import (
+    Location,
+    ReplanBody,
+    TripPlan,
+    TripRequest,
+    TripSummary,
+)
+from ..services.demo_data import build_demo_plan
+from ..services.cleanup import cleanup_stale_files
+from ..services.ical_service import plan_to_ics
+from ..services.image_service import ImageService
+from ..services.route_service import compute_day_routes
+from ..storage.cache import Cache
+from ..storage.db import StorageUnavailable, ensure_database
+from ..storage.trip_store import TripStore
+from .access import AccessCodeMiddleware
+from .rate_limit import RateLimitMiddleware
+
+settings = get_settings()
+
+# 应用日志：stdout + 文件轮转（logs/app.log，单文件 5MB × 3 份）
+_LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+_LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+_file_handler = RotatingFileHandler(_LOG_DIR / "app.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
+_file_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, handlers=[logging.StreamHandler(), _file_handler])
+
+app = FastAPI(
+    title="智能旅行助手 API",
+    description="基于 HelloAgents 多智能体框架 + 高德地图 MCP 的行程规划服务",
+    version="1.0.0",
+    # 开启访问码鉴权时关闭公开文档，避免对外暴露 API 结构
+    docs_url=None if settings.app_password else "/docs",
+    redoc_url=None if settings.app_password else "/redoc",
+    openapi_url=None if settings.app_password else "/openapi.json",
+)
+
+# Agent 流水线全程串行且耗时（10-60s），放到独立线程池里跑，避免阻塞事件循环；
+# 与 IO 线程池分离——图片下载/DB 操作被刷时不会饿死规划流水线
+_pipeline_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="plan")
+_io_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="io")
+
+# 规划并发闸门：流水线只有 2 个 worker，与其让第 3 个请求无限排队
+# （前端 axios 120s 就超时断开，后端白排队），不如快速失败
+_plan_gate = threading.Semaphore(2)
+
+# 中间件注册顺序 = 后注册者在外层：访问码（最内，401 也消耗限流配额，
+# 抑制暴力枚举）→ 限流 → CORS（最外，429/401 响应都要补上跨域头，浏览器才能读到）
+app.add_middleware(AccessCodeMiddleware, password=settings.app_password)
+app.add_middleware(RateLimitMiddleware, settings=settings, executor=_io_executor)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 图片增强服务（含 POI 照片缓存），首个真实请求时惰性创建
+_image_service: ImageService | None = None
+_image_service_lock = threading.Lock()
+
+# 图片增强服务（含 POI 照片缓存），首个真实请求时惰性创建
+_image_service: ImageService | None = None
+
+# 行程持久化（MySQL）与缓存（Redis），启动时初始化
+_trip_store: TripStore | None = None
+_cache: Cache | None = None
+_store_lock = threading.Lock()
+
+
+def _get_store() -> TripStore | None:
+    global _trip_store, _cache
+    # 双重检查：并发首调时确保只有一个 TripStore 实例、只跑一遍建库 DDL
+    if _trip_store is None:
+        with _store_lock:
+            if _trip_store is None:
+                try:
+                    ensure_database(settings)
+                    _trip_store = TripStore(settings)
+                    _cache = Cache(settings)
+                except Exception:  # noqa: BLE001
+                    logger.warning("存储初始化失败（历史/作品集功能降级）", exc_info=True)
+                    return None
+    return _trip_store
+
+# 演示模式下也接受用户传入的日期，保证体验一致
+
+
+@app.get("/api/health")
+async def health():
+    from ..storage.cache import check as redis_check
+    from ..storage.db import check as mysql_check
+
+    def _checks() -> tuple[bool, bool]:
+        return mysql_check(settings), redis_check(settings)
+
+    demo = settings.demo_mode or not settings.ready_for_agents
+    # 探测含网络 I/O（Redis 超时 1.5s、MySQL 建连），放线程池避免阻塞事件循环
+    mysql_ok, redis_ok = await asyncio.get_running_loop().run_in_executor(_io_executor, _checks)
+    return {
+        "status": "ok",
+        "demo_mode": demo or not settings.ready_for_agents,
+        "auth_required": bool(settings.app_password),
+        "mysql": mysql_ok,
+        "redis": redis_ok,
+        "message": "" if settings.ready_for_agents or settings.demo_mode
+        else "未配置 LLM_API_KEY / AMAP_API_KEY，将自动进入演示模式；请在 backend/.env 中配置。",
+    }
+
+
+class AppConfig(BaseModel):
+    amap_js_key: str
+    amap_js_secret: str
+    demo_mode: bool
+
+
+@app.get("/api/config", response_model=AppConfig)
+async def get_app_config():
+    """前端地图初始化所需的公开配置（JS API Key 本身就是浏览器端公开的）。"""
+    demo = settings.demo_mode or not settings.ready_for_agents
+    return AppConfig(
+        amap_js_key=settings.amap_js_key,
+        amap_js_secret=settings.amap_js_secret,
+        demo_mode=demo,
+    )
+
+
+class GeocodeRequest(BaseModel):
+    address: str
+    city: str = ""
+
+
+class GeocodeResponse(BaseModel):
+    longitude: float
+    latitude: float
+    formatted_address: str
+
+
+# ---------- 图片代理 ----------
+
+# 高德图片 CDN 偶发防盗链/混合内容问题，经同源代理转发并落盘缓存，
+# 前端 <img> 与 html2canvas 导出都更稳定。
+# 注意：高德 photos 里除 autonavi/amap 自有图床外，还常见口碑商户图（alicdn.com）
+_IMAGE_CACHE_DIR = Path(__file__).resolve().parents[2] / ".image_cache"
+_IMAGE_HOST_SUFFIXES = ("autonavi.com", "amap.com", "alicdn.com")
+_MAX_IMAGE_REDIRECTS = 3
+
+_IMAGE_MAGICS = (  # (magic bytes, content-type)
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"RIFF", "image/webp"),
+)
+
+
+def _sniff_image(data: bytes) -> str | None:
+    for magic, ctype in _IMAGE_MAGICS:
+        if data.startswith(magic):
+            return ctype
+    return None
+
+
+def _is_allowed_image_host(url: str) -> bool:
+    if not url.lower().startswith(("https://", "http://")):
+        return False
+    host = urlparse(url).hostname or ""
+    return any(host == s or host.endswith("." + s) for s in _IMAGE_HOST_SUFFIXES)
+
+
+@app.get("/api/utils/image")
+async def proxy_image(u: str):
+    """代理高德图片：白名单域名落盘缓存后转发；未知图床直接 400。
+
+    不做 302 直连降级——那等于开放重定向，本域会被当钓鱼跳板用。
+    """
+    if not _is_allowed_image_host(u):
+        raise HTTPException(status_code=400, detail="仅支持高德系图床（autonavi/amap/alicdn）的图片地址")
+
+    cache_key = hashlib.md5(u.encode()).hexdigest()
+    cache_file = _IMAGE_CACHE_DIR / f"{cache_key}.bin"
+    type_file = _IMAGE_CACHE_DIR / f"{cache_key}.type"
+    if cache_file.exists() and type_file.exists():
+        return FileResponse(
+            cache_file,
+            media_type=type_file.read_text(encoding="ascii"),
+            headers={"Cache-Control": "public, max-age=604800"},
+        )
+
+    def _download() -> tuple[bytes, str]:
+        url = u
+        # 手动跟随重定向：每一跳都重新校验白名单，防止白名单域 302 到内网/任意地址
+        for _ in range(_MAX_IMAGE_REDIRECTS + 1):
+            try:
+                resp = httpx.get(
+                    url,
+                    headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.amap.com/"},
+                    timeout=15.0,
+                    follow_redirects=False,
+                )
+            except httpx.HTTPError:
+                raise HTTPException(status_code=502, detail="图片源请求失败")
+            if resp.status_code in (301, 302, 303, 307, 308):
+                loc = resp.headers.get("location")
+                if not loc:
+                    raise HTTPException(status_code=502, detail="图片源重定向缺少地址")
+                url = str(httpx.URL(url).join(loc))
+                if not _is_allowed_image_host(url):
+                    logger.warning("图片源重定向到非白名单域名，已拦截: %s -> %s", u, url)
+                    raise HTTPException(status_code=400, detail="图片源重定向到非白名单域名")
+                continue
+            if resp.status_code != 200:
+                raise HTTPException(status_code=404, detail="图片不存在")
+            # 高德部分 CDN 把 content-type 标成 octet-stream，用魔数识别真实类型
+            ctype = _sniff_image(resp.content)
+            if ctype is None:
+                raise HTTPException(status_code=404, detail="响应不是有效图片")
+            return resp.content, ctype
+        raise HTTPException(status_code=502, detail="图片源重定向次数过多")
+
+    loop = asyncio.get_running_loop()
+    content, ctype = await loop.run_in_executor(_io_executor, _download)
+
+    try:
+        _IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_bytes(content)
+        type_file.write_text(ctype, encoding="ascii")
+    except OSError:
+        pass  # 缓存写入失败不影响返回
+
+    return Response(
+        content=content,
+        media_type=ctype,
+        headers={"Cache-Control": "public, max-age=604800"},
+    )
+
+
+@app.post("/api/utils/geocode", response_model=GeocodeResponse)
+async def geocode(req: GeocodeRequest):
+    """地理编码：供前端"添加景点"时把地址转成坐标。"""
+    if settings.demo_mode or not settings.ready_for_agents:
+        raise HTTPException(status_code=503, detail="演示模式下不支持地理编码，请配置密钥后使用真实模式。")
+    planner = get_planner(settings)
+
+    def _run() -> GeocodeResponse:
+        try:
+            text = planner.mcp_tool.client.call_tool(
+                "maps_geo", {"address": req.address, "city": req.city}
+            )
+        except MCPError as e:
+            raise PlannerError(str(e)) from e
+        import json as _json
+
+        try:
+            data = _json.loads(text)
+            geocodes = data.get("geocodes", [])
+            if not geocodes:
+                raise PlannerError("未查询到该地址的坐标，请更换描述后重试。")
+            lng, lat = geocodes[0]["location"].split(",")
+            return GeocodeResponse(
+                longitude=float(lng),
+                latitude=float(lat),
+                formatted_address=geocodes[0].get("formatted_address", req.address),
+            )
+        except (ValueError, KeyError, TypeError) as e:
+            raise PlannerError(f"地理编码结果解析失败: {e}") from e
+
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(_io_executor, _run)
+    except PlannerError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+RESULT_TTL = 24 * 3600  # plan:result:{hash} 结果缓存 24h
+
+
+def _request_hash(request: TripRequest) -> str:
+    """规划请求指纹。start_date 为空时按"今天"归一化——否则空日期的请求
+    今天和明天哈希相同，会命中过期天气的缓存。"""
+    src = request.model_dump_json()
+    if not request.start_date:
+        src = request.model_copy(update={"start_date": date.today().isoformat()}).model_dump_json()
+    return hashlib.md5(src.encode()).hexdigest()
+
+
+@app.post("/api/trip/plan", response_model=TripPlan)
+async def create_trip_plan(request: TripRequest):
+    """生成完整行程计划。
+
+    - 未配置密钥或 DEMO_MODE=true 时返回演示数据；
+    - 真实模式依次执行：景点搜索 → 天气查询 → 酒店推荐 → 行程规划（多 Agent 协作），
+      成功后自动写入 MySQL 历史库；
+    - 相同请求正在规划中时拒绝重复提交（Redis 规划锁）；
+    - 相同请求 24h 内有成功结果时直接复用（结果缓存，含图片增强）。
+    """
+    demo = settings.demo_mode or not settings.ready_for_agents
+    if demo:
+        await asyncio.sleep(1.5)  # 模拟多 Agent 处理耗时，让前端进度条可感知
+        start_dates = _resolve_dates(request)
+        return build_demo_plan(start_dates)
+
+    loop = asyncio.get_running_loop()
+    request_hash = _request_hash(request)
+    lock_key = f"plan:lock:{request_hash}"
+    result_key = f"plan:result:{request_hash}"
+
+    # 存储初始化提前：结果缓存与规划锁都依赖 Redis（_get_store 内部吞异常，不会抛出）
+    store = await loop.run_in_executor(_io_executor, _get_store)
+
+    # 结果缓存命中：直接返回上次成功结果（已含图片增强与 trip_id），零成本
+    if store and _cache:
+        cached = await loop.run_in_executor(_io_executor, _cache.get, result_key)
+        if cached:
+            try:
+                logger.info("结果缓存命中: %s", result_key)
+                return TripPlan.model_validate(json.loads(cached))
+            except Exception:  # noqa: BLE001
+                logger.warning("结果缓存解析失败，重新规划", exc_info=True)
+
+    # 并发闸门：拿不到许可快速失败；拿到则无论结果如何都在 finally 释放
+    acquired = _plan_gate.acquire(blocking=False)
+    if not acquired:
+        raise HTTPException(status_code=429, detail="系统正在规划其他行程，请稍后再试。")
+
+    lock_token: str | None = None
+    try:
+        if store and _cache:
+            allowed, lock_token = await loop.run_in_executor(_io_executor, _cache.acquire_lock, lock_key, 300)
+            if not allowed:
+                raise HTTPException(status_code=409, detail="相同的规划请求正在处理中，请稍候再试。")
+
+        plan = await loop.run_in_executor(_pipeline_executor, get_planner(settings).plan, request)
+    except HTTPException:
+        raise
+    except PlannerError as e:
+        # PlannerError 是面向用户的可读消息（前端一直按此展示）；异常链进服务端日志
+        logger.warning("规划流水线失败: %s", e, exc_info=e.__cause__)
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:  # noqa: BLE001
+        # 未预期异常不外泄内部细节，详情看服务端日志
+        logger.exception("行程规划未预期失败")
+        raise HTTPException(status_code=500, detail="行程规划失败，请稍后重试（详情见服务端日志）")
+    finally:
+        _plan_gate.release()
+        if store:
+            await loop.run_in_executor(_io_executor, _cache.release_lock, lock_key, lock_token)
+
+    # 图片增强串行打几十个外部 HTTP 请求（最长可达数分钟），必须在 IO 线程池执行，
+    # 否则会把整个事件循环（其他所有请求）卡住
+    await loop.run_in_executor(_io_executor, _enrich_images, plan)
+
+    # 自动入库（失败不影响返回，历史功能降级）
+    if store:
+        try:
+            plan.trip_id = await loop.run_in_executor(_io_executor, store.save, request, plan)
+        except StorageUnavailable:
+            logger.warning("MySQL 不可用，本次行程未入历史库")
+        # 结果入缓存（已含增强图与 trip_id；写失败不影响返回）
+        await loop.run_in_executor(_io_executor, _cache.set, result_key, plan.model_dump_json(), RESULT_TTL)
+
+    return plan
+
+
+def _sse(name: str, payload: dict) -> bytes:
+    return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
+
+
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+@app.post("/api/trip/plan/stream")
+async def create_trip_plan_stream(request: TripRequest):
+    """SSE 流式规划：与 POST /api/trip/plan 语义一致，但按阶段推送真实进度。
+
+    事件流：progress(stage/message/count) × N → done(plan) | error(message)。
+    限流、并发闸门、结果缓存、规划锁冲突在流开始前以普通 HTTP 状态码返回，
+    前端 fetch 可像普通请求一样读取错误详情。
+    """
+    demo = settings.demo_mode or not settings.ready_for_agents
+    loop = asyncio.get_running_loop()
+
+    if demo:
+        async def demo_gen():
+            for stage, message, delay in [
+                ("started", "演示模式开始", 0.2),
+                ("attractions", "景点搜索完成，共 12 个候选（演示）", 0.5),
+                ("weather", "目的地天气预报已获取（演示）", 0.5),
+                ("hotel", "酒店候选已就绪（演示）", 0.5),
+                ("planning", "正在整合候选信息，规划每日行程…", 0.6),
+                ("planned", "行程初稿已生成", 0.3),
+                ("validating", "正在校验行程合理性…", 0.3),
+                ("validated", "校验通过", 0.2),
+                ("images", "正在补充实景配图", 0.3),
+            ]:
+                yield _sse("progress", {"stage": stage, "message": message})
+                await asyncio.sleep(delay)
+            yield _sse("done", {"plan": build_demo_plan(_resolve_dates(request)).model_dump()})
+
+        return StreamingResponse(demo_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+    request_hash = _request_hash(request)
+    lock_key = f"plan:lock:{request_hash}"
+    result_key = f"plan:result:{request_hash}"
+    store = await loop.run_in_executor(_io_executor, _get_store)
+
+    # 结果缓存命中：立即发 done 事件（流式版零成本路径）
+    if store and _cache:
+        cached = await loop.run_in_executor(_io_executor, _cache.get, result_key)
+        if cached:
+            try:
+                plan = TripPlan.model_validate(json.loads(cached))
+                logger.info("结果缓存命中(流式): %s", result_key)
+
+                async def cached_gen(plan=plan):
+                    yield _sse("progress", {"stage": "started", "message": "结果缓存命中，直接复用上次规划"})
+                    yield _sse("done", {"plan": plan.model_dump()})
+
+                return StreamingResponse(cached_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+            except Exception:  # noqa: BLE001
+                logger.warning("结果缓存解析失败，重新规划", exc_info=True)
+
+    # 闸门与规划锁都在流开始前获取：冲突时能以 HTTP 状态码明确返回
+    acquired = _plan_gate.acquire(blocking=False)
+    if not acquired:
+        raise HTTPException(status_code=429, detail="系统正在规划其他行程，请稍后再试。")
+    lock_token: str | None = None
+    if store and _cache:
+        allowed, lock_token = await loop.run_in_executor(_io_executor, _cache.acquire_lock, lock_key, 300)
+        if not allowed:
+            _plan_gate.release()
+            raise HTTPException(status_code=409, detail="相同的规划请求正在处理中，请稍候再试。")
+
+    events: queue.Queue = queue.Queue()
+    plan_holder: dict[str, TripPlan] = {}
+    error_holder: dict[str, str] = {}
+    finished = object()
+
+    def progress(stage: str, message: str, extra: dict | None = None) -> None:
+        events.put(("progress", {"stage": stage, "message": message, **(extra or {})}))
+
+    def run_pipeline() -> None:
+        try:
+            plan_holder["plan"] = get_planner(settings).plan(request, progress=progress)
+        except PlannerError as e:
+            logger.warning("规划流水线失败: %s", e, exc_info=e.__cause__)
+            error_holder["message"] = str(e)
+        except Exception:  # noqa: BLE001
+            logger.exception("行程规划未预期失败")
+            error_holder["message"] = "行程规划失败，请稍后重试（详情见服务端日志）"
+        finally:
+            events.put(finished)
+
+    async def stream():
+        try:
+            yield _sse("progress", {"stage": "started", "message": "已受理，多智能体流水线启动"})
+            task = loop.run_in_executor(_pipeline_executor, run_pipeline)
+            while True:
+                try:
+                    item = events.get_nowait()
+                except queue.Empty:
+                    await asyncio.sleep(0.15)
+                    continue
+                if item is finished:
+                    break
+                name, payload = item
+                yield _sse(name, payload)
+            await task
+
+            if error_holder:
+                yield _sse("error", {"message": error_holder["message"]})
+                return
+
+            plan = plan_holder["plan"]
+            yield _sse("progress", {"stage": "images", "message": "正在为景点/餐厅/酒店补充实景配图"})
+            try:
+                await loop.run_in_executor(_io_executor, _enrich_images, plan)
+            except Exception:  # noqa: BLE001
+                logger.warning("图片增强失败（跳过）", exc_info=True)
+            if store:
+                try:
+                    plan.trip_id = await loop.run_in_executor(_io_executor, store.save, request, plan)
+                except StorageUnavailable:
+                    logger.warning("MySQL 不可用，本次行程未入历史库")
+                await loop.run_in_executor(_io_executor, _cache.set, result_key, plan.model_dump_json(), RESULT_TTL)
+            yield _sse("done", {"plan": plan.model_dump()})
+        finally:
+            _plan_gate.release()
+            if store and _cache:
+                _cache.release_lock(lock_key, lock_token)
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+# ---------- 历史与作品集 ----------
+
+def _get_store_or_503() -> TripStore:
+    store = _get_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail="存储不可用，历史/作品集功能暂不可用。")
+    return store
+
+
+@app.get("/api/trip/history", response_model=list[TripSummary])
+async def list_history(filter: str = "recent", limit: int = 12):
+    """行程卡片列表。filter: recent(我的历史) | starred(我的收藏) | seed(示例作品)"""
+    if filter not in ("recent", "starred", "seed"):
+        raise HTTPException(status_code=400, detail="filter 仅支持 recent/starred/seed")
+    limit = max(1, min(limit, 50))
+
+    def _load():
+        return _get_store_or_503().list_summaries(filter, limit)
+
+    try:
+        # 同步 MySQL 查询（含首次存储初始化的 DDL），放 IO 线程池避免阻塞事件循环
+        return await asyncio.get_running_loop().run_in_executor(_io_executor, _load)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，历史功能暂不可用。")
+
+
+@app.get("/api/trip/history/{trip_id}")
+async def get_history_detail(trip_id: int):
+    """按 ID 取完整行程（含收藏状态），供结果页 /result?id= 加载。"""
+
+    def _load():
+        return _get_store_or_503().get_detail(trip_id)
+
+    try:
+        detail = await asyncio.get_running_loop().run_in_executor(_io_executor, _load)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，历史功能暂不可用。")
+    if detail is None:
+        raise HTTPException(status_code=404, detail="行程不存在或已删除。")
+    return detail
+
+
+@app.post("/api/trip/replan", response_model=TripPlan)
+async def replan_trip(body: ReplanBody):
+    """带约束重规划：用户对行程中的安排反馈问题（约满/没房/排队久/不想去），
+    系统搜索真实替代候选后让 PlannerAgent 做最小改动，产出新版本（parent_id 指向原行程）。"""
+    loop = asyncio.get_running_loop()
+
+    def _load_original():
+        return _get_store_or_503().get_detail(body.trip_id)
+
+    lock_key = f"plan:lock:replan:{hashlib.md5(body.model_dump_json().encode()).hexdigest()}"
+
+    # 并发闸门：与 /plan 同一组 2 个 worker，同样快速失败
+    acquired = _plan_gate.acquire(blocking=False)
+    if not acquired:
+        raise HTTPException(status_code=429, detail="系统正在规划其他行程，请稍后再试。")
+
+    lock_token: str | None = None
+    try:
+        detail = await loop.run_in_executor(_io_executor, _load_original)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="原行程不存在或已删除。")
+
+        original_request = TripRequest(**detail["request"])
+        original_plan = TripPlan(**detail["plan"])
+
+        if _cache:
+            allowed, lock_token = await loop.run_in_executor(_io_executor, _cache.acquire_lock, lock_key, 600)
+            if not allowed:
+                raise HTTPException(status_code=409, detail="相同的重规划请求正在处理中，请稍候再试。")
+
+        new_plan = await loop.run_in_executor(
+            _pipeline_executor,
+            get_planner(settings).replan,
+            original_request,
+            original_plan,
+            body.feedbacks,
+        )
+    except HTTPException:
+        raise
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，重规划功能暂不可用。")
+    except PlannerError as e:
+        logger.warning("重规划流水线失败: %s", e, exc_info=e.__cause__)
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:  # noqa: BLE001
+        logger.exception("重规划未预期失败")
+        raise HTTPException(status_code=500, detail="重规划失败，请稍后重试（详情见服务端日志）")
+    finally:
+        _plan_gate.release()
+        if _cache:
+            await loop.run_in_executor(_io_executor, _cache.release_lock, lock_key, lock_token)
+
+    await loop.run_in_executor(_io_executor, _enrich_images, new_plan)
+    new_plan.parent_id = body.trip_id
+
+    def _save():
+        return _get_store_or_503().save(original_request, new_plan)
+
+    try:
+        new_plan.trip_id = await loop.run_in_executor(_io_executor, _save)
+    except StorageUnavailable:
+        logger.warning("MySQL 不可用，重规划结果未入历史库")
+    return new_plan
+
+
+class SwapBody(BaseModel):
+    day: int
+    original: str  # 要换下的主行程景点名
+    backup: str    # 要换上的 Plan B 备选名
+
+
+@app.post("/api/trip/history/{trip_id}/swap-backup", response_model=TripPlan)
+async def swap_backup(trip_id: int, body: SwapBody):
+    """一键启用 Plan B：把某天的主景点与备选景点对调并入库。"""
+    loop = asyncio.get_running_loop()
+
+    def _load():
+        return _get_store_or_503().get_detail(trip_id)
+
+    try:
+        detail = await loop.run_in_executor(_io_executor, _load)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，暂无法启用备选。")
+    if detail is None:
+        raise HTTPException(status_code=404, detail="行程不存在或已删除。")
+
+    plan = TripPlan(**detail["plan"])
+    day = next((d for d in plan.daily_plans if d.day == body.day), None)
+    if day is None:
+        raise HTTPException(status_code=404, detail=f"行程中没有第 {body.day} 天。")
+    ai = next((i for i, a in enumerate(day.attractions) if a.name == body.original), None)
+    bi = next((i for i, b in enumerate(day.backup_attractions) if b.name == body.backup), None)
+    if ai is None or bi is None:
+        raise HTTPException(status_code=400, detail="未找到对应的主景点或备选景点（行程可能已变化，请刷新页面）。")
+
+    # 对调：备选进入主行程原位置，原景点进入备选位（可换回）
+    day.attractions[ai], day.backup_attractions[bi] = day.backup_attractions[bi], day.attractions[ai]
+
+    def _save():
+        return _get_store_or_503().update_plan(trip_id, plan)
+
+    try:
+        stored = await loop.run_in_executor(_io_executor, _save)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，暂无法启用备选。")
+    if stored is None:
+        raise HTTPException(status_code=404, detail="行程不存在或已删除。")
+    return plan
+
+
+class StarBody(BaseModel):
+    starred: bool
+
+
+@app.get("/api/trip/history/{trip_id}/routes")
+async def get_trip_routes(trip_id: int):
+    """每日真实驾车路线：按天串接景点的导航折线、里程、车程与打车费。
+
+    按需计算并缓存（Redis 7 天）；demo 行程或高德不可用时返回空 routes，
+    前端静默降级为不画线。
+    """
+    loop = asyncio.get_running_loop()
+
+    def _load():
+        return _get_store_or_503().get_detail(trip_id)
+
+    try:
+        detail = await loop.run_in_executor(_io_executor, _load)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，暂无法计算路线。")
+    if detail is None:
+        raise HTTPException(status_code=404, detail="行程不存在或已删除。")
+
+    try:
+        plan = TripPlan(**detail["plan"])
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="行程数据无法解析，无法计算路线。")
+
+    def _compute():
+        return compute_day_routes(settings.amap_api_key, _cache, plan)
+
+    return await loop.run_in_executor(_io_executor, _compute)
+
+
+@app.get("/api/trip/history/{trip_id}/ical")
+async def export_trip_ical(trip_id: int):
+    """行程导出 iCal (.ics)：景点与三餐生成日历事件，可直接导入手机/电脑日历。"""
+    loop = asyncio.get_running_loop()
+
+    def _load():
+        return _get_store_or_503().get_detail(trip_id)
+
+    try:
+        detail = await loop.run_in_executor(_io_executor, _load)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，暂无法导出日历。")
+    if detail is None:
+        raise HTTPException(status_code=404, detail="行程不存在或已删除。")
+
+    try:
+        plan = TripPlan(**detail["plan"])
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="行程数据无法解析，无法导出日历。")
+
+    ics = plan_to_ics(plan)
+    filename = quote(f"{plan.destination}行程.ics")
+    return Response(
+        content=ics,
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )
+
+
+@app.put("/api/trip/history/{trip_id}", response_model=TripPlan)
+async def update_history(trip_id: int, plan: TripPlan):
+    """编辑保存：把结果页编辑后的行程写回数据库。"""
+
+    def _save():
+        return _get_store_or_503().update_plan(trip_id, plan)
+
+    try:
+        updated = await asyncio.get_running_loop().run_in_executor(_io_executor, _save)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，保存功能暂不可用。")
+    if updated is None:
+        raise HTTPException(status_code=404, detail="行程不存在或已删除。")
+    return updated
+
+
+@app.post("/api/trip/history/{trip_id}/star")
+async def star_trip(trip_id: int, body: StarBody):
+
+    def _save():
+        _get_store_or_503().set_star(trip_id, body.starred)
+
+    try:
+        await asyncio.get_running_loop().run_in_executor(_io_executor, _save)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，收藏功能暂不可用。")
+    return {"id": trip_id, "starred": body.starred}
+
+
+@app.delete("/api/trip/history/{trip_id}")
+async def delete_history(trip_id: int):
+
+    def _save():
+        _get_store_or_503().delete(trip_id)
+
+    try:
+        await asyncio.get_running_loop().run_in_executor(_io_executor, _save)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，删除功能暂不可用。")
+    return {"id": trip_id, "deleted": True}
+
+
+def _resolve_dates(request: TripRequest) -> list[str]:
+    try:
+        start = (
+            datetime.strptime(request.start_date, "%Y-%m-%d").date()
+            if request.start_date
+            else date.today()
+        )
+    except ValueError:
+        start = date.today()
+    return [(start + timedelta(days=i)).isoformat() for i in range(request.days)]
+
+
+def _enrich_images(plan: TripPlan) -> None:
+    """为景点/餐厅/酒店补充配图（高德实景图为主，Unsplash 氛围图兜底）。
+
+    同步阻塞且耗时（几十个外部 HTTP 请求），只允许在 _io_executor 中调用。
+    """
+    global _image_service
+    if _image_service is None:
+        with _image_service_lock:
+            if _image_service is None:
+                _image_service = ImageService(settings)
+    _image_service.enrich(plan)
+
+
+# 启动时后台清理过期的图片缓存与 Agent trace（不阻塞启动）
+threading.Thread(target=cleanup_stale_files, name="cleanup", daemon=True).start()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    # 默认仅本机可达；需要局域网/外网访问时改回 "0.0.0.0" 并务必配置 APP_PASSWORD
+    uvicorn.run(app, host="127.0.0.1", port=8000)

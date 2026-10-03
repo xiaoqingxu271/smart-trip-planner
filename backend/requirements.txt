@@ -1,0 +1,11 @@
+# 后端依赖（锁版本保证环境可复现；Python 3.14 实测）
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+httpx==0.28.1
+# 智能体框架（SimpleAgent / HelloAgentsLLM / Tool 基类）
+hello-agents==1.0.0
+# 存储层（行程历史 + 缓存/排行/锁）
+pymysql==1.2.3
+redis==8.1.0

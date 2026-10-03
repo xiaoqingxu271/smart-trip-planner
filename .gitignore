@@ -1,0 +1,26 @@
+# ============ 密钥（必须最先排除） ============
+backend/.env
+
+# ============ Python 运行时产物 ============
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+# Agent 框架 trace / 会话记录（运行时无限增长）
+backend/memory/
+# MCP 工具输出
+backend/tool-output/
+# 日志
+logs/
+# 图片代理落盘缓存（运行时无限增长）
+backend/.image_cache/
+
+# ============ 前端 ============
+frontend/node_modules/
+frontend/dist/
+
+# ============ 编辑器 / 系统 ============
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

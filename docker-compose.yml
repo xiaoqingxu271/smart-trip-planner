@@ -1,0 +1,49 @@
+# 智能旅行助手一键部署：MySQL + Redis + 后端 + 前端（nginx 托管并反代 /api）
+#
+# 使用前提：backend/.env 已配置（LLM_API_KEY / AMAP_API_KEY 等）。
+# MYSQL_HOST / REDIS_URL 由本文件强制指向容器服务，.env 中的 localhost 配置会被覆盖。
+#
+# 启动：docker compose up -d --build     前端访问 http://localhost:8080
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-trip_planner_2026}
+      MYSQL_DATABASE: trip_planner
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD:-trip_planner_2026}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+
+  backend:
+    build: ./backend
+    env_file: ./backend/.env
+    environment:
+      # 容器网络内固定指向服务名，覆盖 .env 的 localhost
+      MYSQL_HOST: mysql
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
