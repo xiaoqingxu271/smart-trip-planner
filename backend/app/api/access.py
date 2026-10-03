@@ -17,6 +17,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from ..config import Settings
+from ..services.user_service import resolve_token
+from ..storage.cache import Cache
+
 
 class AccessCodeMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, password: str):
@@ -36,3 +40,37 @@ class AccessCodeMiddleware(BaseHTTPMiddleware):
             status_code=401,
             content={"detail": "需要访问密码（X-Access-Code 请求头或 ?code= 查询参数）"},
         )
+
+
+class UserAuthMiddleware(BaseHTTPMiddleware):
+    """多用户模式（AUTH_MODE=user）：除公开路径外一律要求 Bearer Token。
+
+    Token 支持 Authorization: Bearer 头与 ?token= 查询参数（<img>/下载场景无法带头）。
+    解析出的 user_id 挂到 request.state.user_id 供端点做数据隔离；
+    认证必须 fail-closed——Redis 不可用时 Token 无法核验，一律 401。
+    """
+
+    PUBLIC_PATHS = {"/api/health", "/api/auth/register", "/api/auth/login"}
+
+    def __init__(self, app, settings: Settings, cache: Cache):
+        super().__init__(app)
+        self._settings = settings
+        self._cache = cache
+
+    async def dispatch(self, request: Request, call_next):
+        if not self._settings.user_auth_enabled:
+            request.state.user_id = None
+            return await call_next(request)
+
+        path = request.url.path
+        if path in self.PUBLIC_PATHS or not path.startswith("/api/"):
+            request.state.user_id = None
+            return await call_next(request)
+
+        auth = request.headers.get("authorization") or ""
+        token = auth[7:] if auth.lower().startswith("bearer ") else (request.query_params.get("token") or "")
+        user_id = resolve_token(self._cache, token) if token else None
+        if user_id is None:
+            return JSONResponse(status_code=401, content={"detail": "请先登录"})
+        request.state.user_id = user_id
+        return await call_next(request)

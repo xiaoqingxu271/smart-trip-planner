@@ -1,11 +1,27 @@
 """异步规划任务：提交/轮询/降级/失败路径。"""
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app.api.main as main_mod
+from app.storage.cache import _get_client
 
 POLL_TIMEOUT = 30
+
+
+@pytest.fixture(autouse=True)
+def _fresh_heavy_bucket():
+    """heavy 桶 5/300s：清掉跨运行残留的限流键，并确保存储已初始化（404 用例状态确定）。"""
+    main_mod._get_store()
+    try:
+        c = _get_client(main_mod.settings)
+        keys = list(c.scan_iter("rl:heavy:*"))
+        if keys:
+            c.delete(*keys)
+    except Exception:
+        pass  # Redis 不可用时由 fail-open 兜底
+    yield
 
 
 def poll_until_done(client: TestClient, job_id: str) -> dict:

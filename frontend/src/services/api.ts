@@ -21,9 +21,27 @@ export function setAccessCode(code: string): void {
   localStorage.setItem(ACCESS_CODE_KEY, code)
 }
 
+// ---------- 会话 Token（AUTH_MODE=user 多用户模式；存 localStorage） ----------
+
+const TOKEN_KEY = 'trip_token'
+
+export function getToken(): string {
+  return localStorage.getItem(TOKEN_KEY) ?? ''
+}
+
+export function setToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token)
+}
+
+export function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY)
+}
+
 request.interceptors.request.use((config) => {
   const code = getAccessCode()
   if (code) config.headers['X-Access-Code'] = code
+  const token = getToken()
+  if (token) config.headers['Authorization'] = `Bearer ${token}`
   console.log(`[API] → ${config.method?.toUpperCase()} ${config.url}`)
   return config
 })
@@ -34,33 +52,74 @@ request.interceptors.response.use(
     const detail = error?.response?.data?.detail
     const message = typeof detail === 'string' ? detail : (detail && JSON.stringify(detail)) || error.message
     console.error(`[API] ✕ ${error?.config?.url}:`, message)
-    // 访问码缺失/失效：清凭证回登录页（登录页自身的探测失败不跳转，由页面提示）
+    // 访问码缺失/会话过期：清凭证回登录页（登录页自身的探测失败不跳转，由页面提示）
     if (error?.response?.status === 401 && !window.location.pathname.startsWith('/login')) {
       localStorage.removeItem(ACCESS_CODE_KEY)
+      clearToken()
       window.location.href = '/login'
     }
     return Promise.reject(new Error(message))
   },
 )
 
-// ---------- 图片代理（<img> 无法带请求头，访问码走查询参数） ----------
+// ---------- 图片代理（<img> 无法带请求头，访问码/Token 走查询参数） ----------
 
 export function imgProxy(url: string | null | undefined): string | null {
   if (!url) return null
+  const params = new URLSearchParams({ u: url })
   const code = getAccessCode()
-  const suffix = code ? `&code=${encodeURIComponent(code)}` : ''
-  return `/api/utils/image?u=${encodeURIComponent(url)}${suffix}`
+  if (code) params.set('code', code)
+  const token = getToken()
+  if (token) params.set('token', token)
+  return `/api/utils/image?${params.toString()}`
 }
 
-// ---------- 应用状态（health 免鉴权，前端据此探测是否需要访问码） ----------
+// ---------- 应用状态（health 免鉴权，前端据此选择登录形态） ----------
 
-let appStatusCache: { auth_required: boolean } | null = null
+export interface AppStatus {
+  auth_required: boolean
+  auth_mode: 'none' | 'user'
+}
 
-export async function getAppStatus(): Promise<{ auth_required: boolean }> {
+let appStatusCache: AppStatus | null = null
+
+export async function getAppStatus(): Promise<AppStatus> {
   if (!appStatusCache) {
     appStatusCache = await request.get('/health')
   }
   return appStatusCache
+}
+
+// ---------- 注册 / 登录 / 会话 ----------
+
+export interface AuthResult {
+  token: string
+  user_id: number
+  username: string
+}
+
+export async function registerUser(username: string, password: string): Promise<AuthResult> {
+  const r: AuthResult = await request.post('/auth/register', { username, password })
+  setToken(r.token)
+  return r
+}
+
+export async function loginUser(username: string, password: string): Promise<AuthResult> {
+  const r: AuthResult = await request.post('/auth/login', { username, password })
+  setToken(r.token)
+  return r
+}
+
+export async function logoutUser(): Promise<void> {
+  try {
+    await request.post('/auth/logout')
+  } finally {
+    clearToken()
+  }
+}
+
+export async function getMe(): Promise<{ user_id: number; username: string }> {
+  return request.get('/auth/me')
 }
 
 export async function planTrip(data: TripRequest): Promise<TripPlan> {
@@ -171,8 +230,13 @@ export async function getTripRoutes(id: number): Promise<TripRoutes> {
   return request.get(`/trip/history/${id}/routes`)
 }
 
-/** iCal 下载地址：<a>/window.open 无法带请求头，访问码走查询参数。 */
+/** iCal 下载地址：<a>/window.open 无法带请求头，访问码/Token 走查询参数。 */
 export function tripIcalUrl(id: number): string {
+  const params = new URLSearchParams()
   const code = getAccessCode()
-  return `/api/trip/history/${id}/ical${code ? `?code=${encodeURIComponent(code)}` : ''}`
+  if (code) params.set('code', code)
+  const token = getToken()
+  if (token) params.set('token', token)
+  const qs = params.toString()
+  return `/api/trip/history/${id}/ical${qs ? `?${qs}` : ''}`
 }

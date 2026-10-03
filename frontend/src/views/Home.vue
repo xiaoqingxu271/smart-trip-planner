@@ -2,7 +2,18 @@
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { deleteTrip, getHistory, imgProxy, planJobPoll, type HistoryFilter, type PlanStage } from '@/services/api'
+import {
+  deleteTrip,
+  getHistory,
+  getMe,
+  getAppStatus,
+  getToken,
+  imgProxy,
+  logoutUser,
+  planJobPoll,
+  type HistoryFilter,
+  type PlanStage,
+} from '@/services/api'
 import type { TripRequest, TripSummary } from '@/types'
 
 const router = useRouter()
@@ -26,6 +37,7 @@ const form = reactive<TripRequest>({
 const submitting = ref(false)
 const loadingTitle = ref('')
 const progressPercent = ref(0)
+const username = ref('')
 
 // 流式规划各阶段对应的进度条百分比
 const STAGE_PERCENT: Record<string, number> = {
@@ -139,12 +151,34 @@ async function handleSubmit() {
 
 onMounted(() => {
   loadGallery()
+  loadUserChip()
 })
+
+async function loadUserChip() {
+  try {
+    const status = await getAppStatus()
+    if (status.auth_mode === 'user' && getToken()) {
+      const me = await getMe()
+      username.value = me.username
+    }
+  } catch {
+    /* token 失效由拦截器统一处理 */
+  }
+}
+
+async function handleLogout() {
+  await logoutUser()
+  window.location.href = '/login'
+}
 </script>
 
 <template>
   <div class="home">
     <div class="hero">
+      <div v-if="username" class="user-chip">
+        👤 {{ username }}
+        <a class="user-logout" @click="handleLogout">退出</a>
+      </div>
       <h1 class="hero-title">🧭 智能旅行助手</h1>
       <p class="hero-subtitle">
         基于 HelloAgents 多智能体框架 · 景点搜索 / 天气查询 / 酒店推荐 / 行程规划
@@ -300,6 +334,25 @@ onMounted(() => {
 .hero {
   text-align: center;
   margin-bottom: 32px;
+  position: relative;
+}
+
+.user-chip {
+  position: absolute;
+  top: 0;
+  right: 0;
+  color: #595959;
+  font-size: 13px;
+  background: #fff;
+  border: 1px solid #e8ecf2;
+  border-radius: 16px;
+  padding: 4px 12px;
+  box-shadow: 0 1px 4px rgba(31, 45, 88, 0.08);
+}
+
+.user-logout {
+  margin-left: 8px;
+  color: #1677ff;
 }
 
 .hero-title {

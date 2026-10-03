@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     # 留空 = 关闭鉴权（本地演示）；配置后所有 /api/* 需携带访问码（X-Access-Code 头或 ?code= 参数）
     app_password: str = ""
 
+    # ---------- 多用户体系（AUTH_MODE=user 时启用注册/登录与按用户隔离） ----------
+    # none（默认）：无鉴权，行程共享池，行为与从前一致；
+    # user：开放注册 + 登录后使用，行程按用户隔离（示例/无主行程全员只读），此时忽略 APP_PASSWORD
+    auth_mode: str = "none"
+    rate_limit_auth: str = "10/60"  # 注册/登录：10 次 / 分钟 / IP（抑制暴力破解）
+
     # ---------- 限流（每 IP 固定窗口计数，Redis 不可用时放行；格式 "次数/窗口秒"） ----------
     rate_limit_enabled: bool = True
     rate_limit_heavy: str = "5/300"     # plan/replan 共用：5 次 / 5 分钟
@@ -66,6 +72,10 @@ class Settings(BaseSettings):
     def ready_for_agents(self) -> bool:
         """真实模式运行所需的最低配置。"""
         return bool(self.llm_api_key and self.amap_api_key)
+
+    @property
+    def user_auth_enabled(self) -> bool:
+        return self.auth_mode == "user"
 
 
 @lru_cache

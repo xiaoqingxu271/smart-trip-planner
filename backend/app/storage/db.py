@@ -87,6 +87,14 @@ def ensure_database(settings: Settings) -> None:
                     " ADD COLUMN themes VARCHAR(200) NULL,"
                     " ADD COLUMN summary VARCHAR(200) NULL"
                 )
+            # 多用户：行程归属列（AUTH_MODE=user 时按用户隔离）
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.columns"
+                " WHERE table_schema = %s AND table_name = 'trips' AND column_name = 'user_id'",
+                (settings.mysql_database,),
+            )
+            if cur.fetchone()[0] == 0:
+                cur.execute("ALTER TABLE trips ADD COLUMN user_id BIGINT NULL, ADD INDEX idx_user (user_id)")
         conn.commit()
     finally:
         conn.close()

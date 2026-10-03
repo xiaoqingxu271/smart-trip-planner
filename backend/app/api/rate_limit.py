@@ -40,6 +40,9 @@ _EXACT_RULES: dict[tuple[str, str], str] = {
     ("POST", "/api/trip/replan"): "heavy",
     ("POST", "/api/utils/geocode"): "geo",
     ("GET", "/api/utils/image"): "img",
+    # 注册/登录独立收紧桶：抑制对弱口令的暴力枚举
+    ("POST", "/api/auth/register"): "auth",
+    ("POST", "/api/auth/login"): "auth",
 }
 
 
@@ -74,6 +77,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             "geo": parse_limit(settings.rate_limit_geo),
             "img": parse_limit(settings.rate_limit_img),
             "default": parse_limit(settings.rate_limit_default),
+            "auth": parse_limit(settings.rate_limit_auth),
         }
 
     def _bucket_for(self, request: Request) -> str | None:

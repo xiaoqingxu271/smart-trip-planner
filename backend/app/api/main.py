@@ -25,7 +25,7 @@ from urllib.parse import quote, urlparse
 logger = logging.getLogger(__name__)
 
 import httpx
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -48,7 +48,8 @@ from ..services.route_service import compute_day_routes
 from ..storage.cache import Cache
 from ..storage.db import StorageUnavailable, ensure_database
 from ..storage.trip_store import TripStore
-from .access import AccessCodeMiddleware
+from .access import AccessCodeMiddleware, UserAuthMiddleware
+from .auth import router as auth_router
 from .rate_limit import RateLimitMiddleware
 
 settings = get_settings()
@@ -80,10 +81,20 @@ _io_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="io")
 # （前端 axios 120s 就超时断开，后端白排队），不如快速失败
 _plan_gate = threading.Semaphore(2)
 
-# 中间件注册顺序 = 后注册者在外层：访问码（最内，401 也消耗限流配额，
+# 中间件注册顺序 = 后注册者在外层：鉴权（最内，401 也消耗限流配额，
 # 抑制暴力枚举）→ 限流 → CORS（最外，429/401 响应都要补上跨域头，浏览器才能读到）
-app.add_middleware(AccessCodeMiddleware, password=settings.app_password)
+# 访问码与多用户互斥：AUTH_MODE=user 时登录体系取代访问码
+if settings.app_password and not settings.user_auth_enabled:
+    app.add_middleware(AccessCodeMiddleware, password=settings.app_password)
+app.add_middleware(UserAuthMiddleware, settings=settings, cache=Cache(settings))
 app.add_middleware(RateLimitMiddleware, settings=settings, executor=_io_executor)
+
+app.include_router(auth_router)
+
+
+def _uid(http: Request) -> int | None:
+    """当前登录用户（AUTH_MODE=user 时由中间件解析；其余模式恒为 None）。"""
+    return getattr(http.state, "user_id", None)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -141,6 +152,7 @@ async def health():
         "status": "ok",
         "demo_mode": demo or not settings.ready_for_agents,
         "auth_required": bool(settings.app_password),
+        "auth_mode": settings.auth_mode,
         "mysql": mysql_ok,
         "redis": redis_ok,
         "message": "" if settings.ready_for_agents or settings.demo_mode
@@ -346,7 +358,7 @@ _DEMO_STAGES = [
 ]
 
 
-def _plan_execute(request: TripRequest, progress=None) -> TripPlan:
+def _plan_execute(request: TripRequest, progress=None, user_id: int | None = None) -> TripPlan:
     """规划执行主体：结果缓存 → 流水线 → 图片增强 → 入库 → 结果写缓存。
 
     并发闸门与规划锁由调用方持有；同步阻塞，必须在 _pipeline_executor 中运行。
@@ -385,7 +397,7 @@ def _plan_execute(request: TripRequest, progress=None) -> TripPlan:
     # 自动入库（失败不影响返回，历史功能降级）
     if store:
         try:
-            plan.trip_id = store.save(request, plan)
+            plan.trip_id = store.save(request, plan, user_id)
         except StorageUnavailable:
             logger.warning("MySQL 不可用，本次行程未入历史库")
         # 结果入缓存（已含增强图与 trip_id；写失败不影响返回）
@@ -393,7 +405,7 @@ def _plan_execute(request: TripRequest, progress=None) -> TripPlan:
     return plan
 
 
-def _plan_full(request: TripRequest, progress=None) -> TripPlan:
+def _plan_full(request: TripRequest, progress=None, user_id: int | None = None) -> TripPlan:
     """同步完整规划：demo 分支 + 结果缓存 + 并发闸门 + 规划锁 + 执行。"""
     demo = settings.demo_mode or not settings.ready_for_agents
     if demo:
@@ -415,7 +427,7 @@ def _plan_full(request: TripRequest, progress=None) -> TripPlan:
             allowed, lock_token = _cache.acquire_lock(lock_key, 300)
             if not allowed:
                 raise PlanJobError(409, "相同的规划请求正在处理中，请稍候再试。")
-        return _plan_execute(request, progress)
+        return _plan_execute(request, progress, user_id)
     except PlanJobError:
         raise
     except PlannerError as e:
@@ -433,7 +445,7 @@ def _plan_full(request: TripRequest, progress=None) -> TripPlan:
 
 
 @app.post("/api/trip/plan", response_model=TripPlan)
-async def create_trip_plan(request: TripRequest):
+async def create_trip_plan(request: TripRequest, http: Request):
     """同步生成完整行程计划（连接挂住直到完成；前端建议用 /async 版本）。
 
     - 未配置密钥或 DEMO_MODE=true 时返回演示数据；
@@ -442,7 +454,7 @@ async def create_trip_plan(request: TripRequest):
     """
     loop = asyncio.get_running_loop()
     try:
-        return await loop.run_in_executor(_pipeline_executor, _plan_full, request)
+        return await loop.run_in_executor(_pipeline_executor, _plan_full, request, _uid(http))
     except PlanJobError as e:
         raise HTTPException(status_code=e.status, detail=e.detail)
 
@@ -458,7 +470,7 @@ def _write_job(job_id: str, state: dict) -> None:
 
 
 @app.post("/api/trip/plan/async")
-async def submit_plan_job(request: TripRequest):
+async def submit_plan_job(request: TripRequest, http: Request):
     """异步规划：立即返回 job_id，进度与结果经 GET /api/trip/jobs/{job_id} 轮询。
 
     - 客户端断开不影响任务执行；结果 24h 内可取（Redis）；
@@ -490,8 +502,9 @@ async def submit_plan_job(request: TripRequest):
                 _plan_gate.release()
                 raise HTTPException(status_code=409, detail="相同的规划请求正在处理中，请稍候再试。")
 
+    user_id = _uid(http)
     job_id = secrets.token_hex(12)
-    _write_job(job_id, {"job_id": job_id, "status": "pending", "message": "已受理，等待调度"})
+    _write_job(job_id, {"job_id": job_id, "status": "pending", "message": "已受理，等待调度", "user_id": user_id})
 
     def progress(stage: str, message: str, extra: dict | None = None) -> None:
         _write_job(job_id, {"job_id": job_id, "status": "running", "stage": stage, "message": message, **(extra or {})})
@@ -504,11 +517,11 @@ async def submit_plan_job(request: TripRequest):
                     time.sleep(delay)
                 plan = build_demo_plan(_resolve_dates(request))
             else:
-                plan = _plan_execute(request, progress)
+                plan = _plan_execute(request, progress, user_id)
             _write_job(job_id, {"job_id": job_id, "status": "succeeded", "stage": "done",
-                                "message": "规划完成", "plan": plan.model_dump()})
+                                "message": "规划完成", "plan": plan.model_dump(), "user_id": user_id})
         except PlanJobError as e:
-            _write_job(job_id, {"job_id": job_id, "status": "failed", "error": e.detail})
+            _write_job(job_id, {"job_id": job_id, "status": "failed", "error": e.detail, "user_id": user_id})
         except Exception:  # noqa: BLE001
             logger.exception("异步规划未预期失败")
             _write_job(job_id, {"job_id": job_id, "status": "failed",
@@ -527,10 +540,11 @@ _JOB_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 
 
 @app.get("/api/trip/jobs/{job_id}")
-async def get_plan_job(job_id: str):
+async def get_plan_job(job_id: str, http: Request):
     """查询异步规划任务状态。
 
     pending/running（含 stage/message/count）→ succeeded（含完整 plan）/ failed（含 error）。
+    绑定了用户的任务仅本人可读。
     """
     if _cache is None:
         raise HTTPException(status_code=503, detail="任务状态存储（Redis）不可用")
@@ -539,7 +553,11 @@ async def get_plan_job(job_id: str):
     raw = await asyncio.get_running_loop().run_in_executor(_io_executor, _cache.get, _job_key(job_id))
     if not raw:
         raise HTTPException(status_code=404, detail="任务不存在或已过期")
-    return json.loads(raw)
+    state = json.loads(raw)
+    owner = state.get("user_id")
+    if owner is not None and owner != _uid(http):
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    return state
 
 
 # ---------- 历史与作品集 ----------
@@ -552,14 +570,15 @@ def _get_store_or_503() -> TripStore:
 
 
 @app.get("/api/trip/history", response_model=list[TripSummary])
-async def list_history(filter: str = "recent", limit: int = 12):
+async def list_history(http: Request, filter: str = "recent", limit: int = 12):
     """行程卡片列表。filter: recent(我的历史) | starred(我的收藏) | seed(示例作品)"""
+    user_id = _uid(http)
     if filter not in ("recent", "starred", "seed"):
         raise HTTPException(status_code=400, detail="filter 仅支持 recent/starred/seed")
     limit = max(1, min(limit, 50))
 
     def _load():
-        return _get_store_or_503().list_summaries(filter, limit)
+        return _get_store_or_503().list_summaries(filter, limit, user_id)
 
     try:
         # 同步 MySQL 查询（含首次存储初始化的 DDL），放 IO 线程池避免阻塞事件循环
@@ -569,11 +588,12 @@ async def list_history(filter: str = "recent", limit: int = 12):
 
 
 @app.get("/api/trip/history/{trip_id}")
-async def get_history_detail(trip_id: int):
+async def get_history_detail(http: Request, trip_id: int):
     """按 ID 取完整行程（含收藏状态），供结果页 /result?id= 加载。"""
+    user_id = _uid(http)
 
     def _load():
-        return _get_store_or_503().get_detail(trip_id)
+        return _get_store_or_503().get_detail(trip_id, user_id)
 
     try:
         detail = await asyncio.get_running_loop().run_in_executor(_io_executor, _load)
@@ -585,13 +605,14 @@ async def get_history_detail(trip_id: int):
 
 
 @app.post("/api/trip/replan", response_model=TripPlan)
-async def replan_trip(body: ReplanBody):
+async def replan_trip(body: ReplanBody, http: Request):
     """带约束重规划：用户对行程中的安排反馈问题（约满/没房/排队久/不想去），
     系统搜索真实替代候选后让 PlannerAgent 做最小改动，产出新版本（parent_id 指向原行程）。"""
+    user_id = _uid(http)
     loop = asyncio.get_running_loop()
 
     def _load_original():
-        return _get_store_or_503().get_detail(body.trip_id)
+        return _get_store_or_503().get_detail(body.trip_id, user_id)
 
     lock_key = f"plan:lock:replan:{hashlib.md5(body.model_dump_json().encode()).hexdigest()}"
 
@@ -640,7 +661,7 @@ async def replan_trip(body: ReplanBody):
     new_plan.parent_id = body.trip_id
 
     def _save():
-        return _get_store_or_503().save(original_request, new_plan)
+        return _get_store_or_503().save(original_request, new_plan, user_id)
 
     try:
         new_plan.trip_id = await loop.run_in_executor(_io_executor, _save)
@@ -656,12 +677,13 @@ class SwapBody(BaseModel):
 
 
 @app.post("/api/trip/history/{trip_id}/swap-backup", response_model=TripPlan)
-async def swap_backup(trip_id: int, body: SwapBody):
+async def swap_backup(http: Request, trip_id: int, body: SwapBody):
     """一键启用 Plan B：把某天的主景点与备选景点对调并入库。"""
+    user_id = _uid(http)
     loop = asyncio.get_running_loop()
 
     def _load():
-        return _get_store_or_503().get_detail(trip_id)
+        return _get_store_or_503().get_detail(trip_id, user_id)
 
     try:
         detail = await loop.run_in_executor(_io_executor, _load)
@@ -683,7 +705,7 @@ async def swap_backup(trip_id: int, body: SwapBody):
     day.attractions[ai], day.backup_attractions[bi] = day.backup_attractions[bi], day.attractions[ai]
 
     def _save():
-        return _get_store_or_503().update_plan(trip_id, plan)
+        return _get_store_or_503().update_plan(trip_id, plan, user_id)
 
     try:
         stored = await loop.run_in_executor(_io_executor, _save)
@@ -699,16 +721,17 @@ class StarBody(BaseModel):
 
 
 @app.get("/api/trip/history/{trip_id}/routes")
-async def get_trip_routes(trip_id: int):
+async def get_trip_routes(http: Request, trip_id: int):
     """每日真实驾车路线：按天串接景点的导航折线、里程、车程与打车费。
 
     按需计算并缓存（Redis 7 天）；demo 行程或高德不可用时返回空 routes，
     前端静默降级为不画线。
     """
+    user_id = _uid(http)
     loop = asyncio.get_running_loop()
 
     def _load():
-        return _get_store_or_503().get_detail(trip_id)
+        return _get_store_or_503().get_detail(trip_id, user_id)
 
     try:
         detail = await loop.run_in_executor(_io_executor, _load)
@@ -729,12 +752,13 @@ async def get_trip_routes(trip_id: int):
 
 
 @app.get("/api/trip/history/{trip_id}/ical")
-async def export_trip_ical(trip_id: int):
+async def export_trip_ical(http: Request, trip_id: int):
     """行程导出 iCal (.ics)：景点与三餐生成日历事件，可直接导入手机/电脑日历。"""
+    user_id = _uid(http)
     loop = asyncio.get_running_loop()
 
     def _load():
-        return _get_store_or_503().get_detail(trip_id)
+        return _get_store_or_503().get_detail(trip_id, user_id)
 
     try:
         detail = await loop.run_in_executor(_io_executor, _load)
@@ -758,11 +782,12 @@ async def export_trip_ical(trip_id: int):
 
 
 @app.put("/api/trip/history/{trip_id}", response_model=TripPlan)
-async def update_history(trip_id: int, plan: TripPlan):
+async def update_history(http: Request, trip_id: int, plan: TripPlan):
     """编辑保存：把结果页编辑后的行程写回数据库。"""
+    user_id = _uid(http)
 
     def _save():
-        return _get_store_or_503().update_plan(trip_id, plan)
+        return _get_store_or_503().update_plan(trip_id, plan, user_id)
 
     try:
         updated = await asyncio.get_running_loop().run_in_executor(_io_executor, _save)
@@ -774,28 +799,34 @@ async def update_history(trip_id: int, plan: TripPlan):
 
 
 @app.post("/api/trip/history/{trip_id}/star")
-async def star_trip(trip_id: int, body: StarBody):
+async def star_trip(http: Request, trip_id: int, body: StarBody):
+    user_id = _uid(http)
 
     def _save():
-        _get_store_or_503().set_star(trip_id, body.starred)
+        return _get_store_or_503().set_star(trip_id, body.starred, user_id)
 
     try:
-        await asyncio.get_running_loop().run_in_executor(_io_executor, _save)
+        ok = await asyncio.get_running_loop().run_in_executor(_io_executor, _save)
     except StorageUnavailable:
         raise HTTPException(status_code=503, detail="MySQL 不可用，收藏功能暂不可用。")
+    if not ok:
+        raise HTTPException(status_code=404, detail="行程不存在或仅本人行程可收藏。")
     return {"id": trip_id, "starred": body.starred}
 
 
 @app.delete("/api/trip/history/{trip_id}")
-async def delete_history(trip_id: int):
+async def delete_history(http: Request, trip_id: int):
+    user_id = _uid(http)
 
     def _save():
-        _get_store_or_503().delete(trip_id)
+        return _get_store_or_503().delete(trip_id, user_id)
 
     try:
-        await asyncio.get_running_loop().run_in_executor(_io_executor, _save)
+        ok = await asyncio.get_running_loop().run_in_executor(_io_executor, _save)
     except StorageUnavailable:
         raise HTTPException(status_code=503, detail="MySQL 不可用，删除功能暂不可用。")
+    if not ok:
+        raise HTTPException(status_code=404, detail="行程不存在或不可删除（示例行程不可删）。")
     return {"id": trip_id, "deleted": True}
 
 

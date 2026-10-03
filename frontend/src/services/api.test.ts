@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { getAccessCode, imgProxy, setAccessCode } from './api'
+import { clearToken, getAccessCode, getToken, imgProxy, setAccessCode, setToken } from './api'
 
 beforeEach(() => {
   localStorage.clear()
@@ -16,6 +16,19 @@ describe('访问码存取', () => {
   })
 })
 
+describe('会话 Token 存取', () => {
+  it('set 后能读回，clear 后为空', () => {
+    setToken('tok_abc')
+    expect(getToken()).toBe('tok_abc')
+    clearToken()
+    expect(getToken()).toBe('')
+  })
+
+  it('未设置时返回空串', () => {
+    expect(getToken()).toBe('')
+  })
+})
+
 describe('imgProxy 图片代理 URL', () => {
   it('空地址返回 null', () => {
     expect(imgProxy(null)).toBeNull()
@@ -23,16 +36,29 @@ describe('imgProxy 图片代理 URL', () => {
     expect(imgProxy('')).toBeNull()
   })
 
-  it('无访问码时不带 code 参数', () => {
+  it('无凭证时不带 code/token 参数', () => {
     const url = imgProxy('https://store.is.autonavi.com/a.jpg')
     expect(url).toBe('/api/utils/image?u=' + encodeURIComponent('https://store.is.autonavi.com/a.jpg'))
-    expect(url).not.toContain('code=')
   })
 
   it('有访问码时附带 code 查询参数', () => {
     setAccessCode('pw&1=2')
     const url = imgProxy('https://store.is.autonavi.com/a.jpg')!
-    expect(url).toContain('&code=' + encodeURIComponent('pw&1=2'))
+    expect(url).toContain('code=' + encodeURIComponent('pw&1=2'))
     expect(url.startsWith('/api/utils/image?u=')).toBe(true)
+  })
+
+  it('有 Token 时附带 token 查询参数', () => {
+    setToken('tok_xyz')
+    const url = imgProxy('https://store.is.autonavi.com/a.jpg')!
+    expect(url).toContain('token=tok_xyz')
+  })
+
+  it('两种凭证可同时携带', () => {
+    setAccessCode('pw')
+    setToken('tok')
+    const url = imgProxy('https://a.com/b.png')!
+    expect(url).toContain('code=pw')
+    expect(url).toContain('token=tok')
   })
 })
