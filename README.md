@@ -1,6 +1,16 @@
-# 🧭 智能旅行助手（HelloAgents Trip Planner）
+# 🧭 智能旅行助手
+
+[![CI](https://github.com/xiaoqingxu271/smart-trip-planner/actions/workflows/ci.yml/badge.svg)](https://github.com/xiaoqingxu271/smart-trip-planner/actions/workflows/ci.yml)
 
 基于 [Hello-Agents 第十三章 · 智能旅行助手](https://datawhalechina.github.io/hello-agents/#/./chapter13/%E7%AC%AC%E5%8D%81%E4%B8%89%E7%AB%A0%20%E6%99%BA%E8%83%BD%E6%97%85%E8%A1%8C%E5%8A%A9%E6%89%8B) 的设计与 [HelloAgents](https://github.com/datawhalechina/hello-agents) 框架实现的完整旅行规划应用：四个专用智能体协作，通过 **MCP 协议**调用高德地图真实数据，生成含景点、三餐、酒店、天气、预算的完整行程，支持地图可视化、行程编辑与导出。
+
+## 🖼 界面预览
+
+| 首页（规划搜索卡 + 精选行程画廊） | 登录页（分屏品牌视觉） | 行程结果（时间线 + 地图） |
+|---|---|---|
+| ![首页](docs/screenshots/home.png) | ![登录](docs/screenshots/login.png) | ![结果](docs/screenshots/result.png) |
+
+> 界面采用"森林绿 + 奶油底 + 琥珀点缀"的旅行编辑风设计系统（灵感参考 Dribbble 旅行类高赞作品），图标使用 Lucide 线性图标库（ISC 许可），全局设计令牌见 `frontend/src/style.css`。
 
 ## ✨ 五大核心功能
 
@@ -34,25 +44,34 @@
 ```
 smart-trip-planner/
 ├── backend/
-│   ├── requirements.txt
+│   ├── requirements.txt / requirements-dev.txt
 │   ├── .env.example                 # 复制为 .env 并填入密钥
+│   ├── sql/init.sql                 # 建表脚本（应用启动时自动执行，可重复执行）
 │   └── app/
 │       ├── config.py                # 环境变量配置
 │       ├── models/schemas.py        # Pydantic 数据模型（Location→…→TripPlan）
 │       ├── agents/
 │       │   ├── mcp_tool.py          # MCPTool：MCP stdio 客户端 + auto_expand 展开
 │       │   ├── prompts.py           # 4 个 Agent 的提示词
+│       │   ├── validator.py         # 规划后确定性校验（真实性/闭馆/动线/密度）
 │       │   └── trip_planner.py      # TripPlannerAgent 多 Agent 流水线
-│       ├── services/
-│       │   ├── unsplash_service.py  # 景点配图（数据增强，不封装为工具）
-│       │   └── demo_data.py         # 演示模式示例数据（北京 3 日）
-│       └── api/main.py              # FastAPI 路由 + CORS
-└── frontend/
-    └── src/
-        ├── views/Home.vue           # 表单 + 加载进度模拟
-        ├── views/Result.vue         # 地图/预算/编辑/导出/侧边导航
-        ├── services/api.ts          # Axios 封装（2 分钟超时）
-        └── types/index.ts           # 与后端 schemas 一一对应的 TS 类型
+│       ├── services/                # 图片服务 / 演示数据 / 限流等
+│       ├── storage/                 # MySQL(db/trip_store) + Redis(cache) 协作层
+│       └── api/main.py              # FastAPI 路由 + 鉴权/限流中间件
+├── frontend/
+│   └── src/
+│       ├── App.vue                  # antd 全局主题令牌（森林绿设计系统）
+│       ├── style.css                # CSS 设计令牌（配色/圆角/阴影/眉标）
+│       ├── router/index.ts          # 登录守卫（按后端鉴权形态选择凭证）
+│       ├── components/AppIcon.vue   # Lucide 图标统一渲染组件
+│       ├── assets/icons/            # 本地化的 Lucide SVG（ISC 许可）
+│       ├── views/Home.vue           # Hero + 分栏规划搜索卡 + 精选行程画廊
+│       ├── views/Login.vue          # 分屏登录/注册（多用户模式）
+│       ├── views/Result.vue         # 概览横幅/时间线/Bento 预算/地图/导出
+│       ├── services/api.ts          # Axios 封装（2 分钟超时）
+│       └── types/index.ts           # 与后端 schemas 一一对应的 TS 类型
+├── docs/screenshots/                # README 界面截图
+└── .github/workflows/ci.yml         # CI：后端 pytest（MySQL/Redis 服务）+ 前端构建测试
 ```
 
 ## 🚀 快速开始
@@ -89,6 +108,8 @@ npm run dev
 
 打开 <http://localhost:5173> 即可使用。Vite 已配置 `/api` 代理到后端 8000 端口，无跨域问题。
 
+> 💡 鉴权形态由 `.env` 决定：默认 `AUTH_MODE=none` 无需登录；配置 `AUTH_MODE=user` 后开放注册/登录（首次使用在登录页注册账号即可），行程按用户隔离；配置 `APP_PASSWORD` 则为单访问码模式。
+
 Windows 用户也可直接双击 `start_backend.bat` 与 `start_frontend.bat`。
 
 ### Docker 一键部署
@@ -119,7 +140,7 @@ cd frontend && npm test
 
 > 本地 Redis 为 5.x 时，客户端已强制 RESP2 协议兼容（redis-py 8 默认的 RESP3 握手在 <6.0 服务端会报 `unknown command HELLO`）。
 
-**作品集/历史**：首页下方"精选行程"区含 ✨示例作品（内置种子数据）／⭐我的收藏／🕘最近规划 三个页签，卡片点击进入 `/result?id=` 由服务端按 ID 加载；结果页可一键收藏。
+**作品集/历史**：首页下方"精选行程"区含 示例作品（内置种子数据）／我的收藏／最近规划 三个页签，卡片点击进入 `/result?id=` 由服务端按 ID 加载；结果页可一键收藏。
 
 ## 🔍 关键实现说明
 
@@ -139,10 +160,21 @@ cd frontend && npm test
 ## 🧪 测试
 
 ```bash
-cd backend && python -m pytest tests/ -v
+cd backend  && pip install -r requirements-dev.txt && python -m pytest tests/ -v
+cd frontend && npm test          # vitest：api 服务层单测
+cd frontend && npm run build     # vue-tsc 类型检查 + vite 构建
 ```
 
-回归套件覆盖：请求模型边界（超长输入拦截）、校验器真实性/闭馆/距离规则（FakeClient，不打真实 API）、MCP 工具白名单（展开过滤 + 父入口拦截）、访问码鉴权、限流中间件（真实 Redis）。安装开发依赖：`pip install -r requirements-dev.txt`。
+后端回归套件（43 个用例）覆盖：请求模型边界（超长输入拦截）、校验器真实性/闭馆/距离规则（FakeClient，不打真实 API）、MCP 工具白名单（展开过滤 + 父入口拦截）、访问码/多用户鉴权、限流中间件（真实 Redis）、规划锁与存储语义。需要真实 Redis 的用例在 Redis 不可用时自动跳过。
+
+## 🤖 CI
+
+GitHub Actions（`.github/workflows/ci.yml`）在每次 push / PR 时运行两个并行任务：
+
+| 任务 | 内容 |
+|---|---|
+| **后端** | 拉起 MySQL 8.4 + Redis 7 服务容器（健康检查通过才执行），注入连接环境变量，跑全量 pytest（存储/限流/鉴权用例**无 skip 全量执行**） |
+| **前端** | `npm ci` → `vue-tsc` 类型检查 + `vite build` → `vitest` 单元测试 |
 
 ## 🔒 部署与安全
 
@@ -166,4 +198,4 @@ cd backend && python -m pytest tests/ -v
 
 ## 🛠 技术栈
 
-`Python 3.10+` · `FastAPI` · `Pydantic v2` · `hello-agents 1.0.0` · `MCP (stdio JSON-RPC)` · `@amap/amap-maps-mcp-server` · `Vue 3` · `TypeScript` · `Vite` · `Ant Design Vue 4` · `@amap/amap-jsapi-loader` · `html2canvas` · `jsPDF`
+`Python 3.10+（3.14 实测）` · `FastAPI` · `Pydantic v2` · `hello-agents 1.0.0` · `MCP (stdio JSON-RPC)` · `@amap/amap-maps-mcp-server` · `Vue 3` · `TypeScript` · `Vite` · `Ant Design Vue 4` · `Lucide Icons` · `@amap/amap-jsapi-loader` · `html2canvas` · `jsPDF`

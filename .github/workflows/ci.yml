@@ -7,33 +7,71 @@ on:
 
 jobs:
   backend:
+    name: 后端 · pytest（MySQL + Redis 服务容器）
     runs-on: ubuntu-latest
+
+    services:
+      # 提供真实 MySQL/Redis，让存储层/限流/鉴权用例全量执行（无 skip）
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: trip_planner
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: '3306'
+      MYSQL_USER: root
+      MYSQL_PASSWORD: root
+      MYSQL_DATABASE: trip_planner
+      REDIS_URL: redis://127.0.0.1:6379/0
+      # CI 无外部密钥：缺 LLM/高德 Key 时后端自动为演示形态，测试不依赖真实 API
+      LLM_API_KEY: ''
+      AMAP_API_KEY: ''
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
       - name: Install deps
-        working-directory: backend
-        run: pip install -r requirements-dev.txt
+        run: pip install -r backend/requirements-dev.txt
       - name: Run tests
         working-directory: backend
-        # Redis 相关用例在 CI 无 Redis 时自动跳过（skipif），其余确定性用例全跑
         run: python -m pytest tests/ -v
 
   frontend:
+    name: 前端 · 类型检查 / 构建 / 单元测试
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - name: Install deps
         working-directory: frontend
         run: npm ci
-      - name: Unit tests
-        working-directory: frontend
-        run: npm test
-      - name: Build
+      - name: Build（vue-tsc --noEmit && vite build）
         working-directory: frontend
         run: npm run build
+      - name: Unit tests（vitest）
+        working-directory: frontend
+        run: npm test
