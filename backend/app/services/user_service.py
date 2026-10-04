@@ -12,7 +12,7 @@ import secrets
 
 from ..config import Settings
 from ..storage.cache import Cache
-from ..storage.db import StorageUnavailable, connection
+from ..storage.db import StorageUnavailable, connection, ensure_database_once
 
 TOKEN_TTL = 7 * 24 * 3600
 _PBKDF2_ROUNDS = 200_000
@@ -54,6 +54,7 @@ def validate_credentials(username: str, password: str) -> None:
 
 def create_user(settings: Settings, username: str, password: str) -> int:
     """创建用户，返回 user_id；用户名重复/格式非法抛 AuthError。"""
+    ensure_database_once(settings)  # 全新部署时保证 users 表存在
     validate_credentials(username, password)
     try:
         with connection(settings) as conn, conn.cursor() as cur:
@@ -71,6 +72,7 @@ def create_user(settings: Settings, username: str, password: str) -> int:
 
 def verify_login(settings: Settings, username: str, password: str) -> int | None:
     """校验登录，成功返回 user_id，失败返回 None。"""
+    ensure_database_once(settings)
     try:
         with connection(settings) as conn, conn.cursor() as cur:
             cur.execute("SELECT id, password_hash FROM users WHERE username = %s", (username,))

@@ -100,6 +100,26 @@ def ensure_database(settings: Settings) -> None:
         conn.close()
 
 
+_ENSURE_LOCK = threading.Lock()
+_ENSURED = False
+
+
+def ensure_database_once(settings: Settings) -> None:
+    """进程内幂等版：保证库表已创建。
+
+    注册/登录等不经过 _get_store 的路径（如首次注册时 users 表还不存在）
+    必须先调用本函数；其余路径沿用 ensure_database。
+    """
+    global _ENSURED
+    if _ENSURED:
+        return
+    with _ENSURE_LOCK:
+        if _ENSURED:
+            return
+        ensure_database(settings)
+        _ENSURED = True
+
+
 @contextmanager
 def connection(settings: Settings) -> Iterator[pymysql.connections.Connection]:
     """共享单连接的完整使用周期（含 ping），全程持有 _LOCK 串行。

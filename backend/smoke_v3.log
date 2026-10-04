@@ -1,9 +1,0 @@
-INFO:     Started server process [50160]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://127.0.0.1:8010 (Press CTRL+C to quit)
-INFO:     127.0.0.1:57266 - "GET /api/health HTTP/1.1" 200 OK
-2026-10-03 17:52:50,886 INFO [app.storage.trip_store] 已为 1 条旧行程回填列表摘要
-INFO:     127.0.0.1:57271 - "GET /api/trip/history/12/ical HTTP/1.1" 200 OK
-INFO:     127.0.0.1:57273 - "GET /api/trip/history/12/routes HTTP/1.1" 200 OK
-INFO:     127.0.0.1:57280 - "GET /api/trip/history/12/routes HTTP/1.1" 200 OK

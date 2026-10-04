@@ -24,3 +24,6 @@ frontend/dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 测试缓存
+.pytest_cache/
