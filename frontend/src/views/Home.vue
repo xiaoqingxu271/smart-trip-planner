@@ -15,6 +15,7 @@ import {
   type PlanStage,
 } from '@/services/api'
 import type { TripRequest, TripSummary } from '@/types'
+import AppIcon from '@/components/AppIcon.vue'
 
 const router = useRouter()
 
@@ -54,9 +55,9 @@ const STAGE_PERCENT: Record<string, number> = {
 
 // ---------- 精选行程（作品集） ----------
 const galleryTabs: { key: HistoryFilter; label: string; hint: string }[] = [
-  { key: 'seed', label: '✨ 示例作品', hint: '内置的精选行程案例' },
-  { key: 'starred', label: '⭐ 我的收藏', hint: '结果页点星收藏的好规划' },
-  { key: 'recent', label: '🕘 最近规划', hint: '你最近生成的行程' },
+  { key: 'seed', label: '示例作品', hint: '内置的精选行程案例' },
+  { key: 'starred', label: '我的收藏', hint: '结果页点星收藏的好规划' },
+  { key: 'recent', label: '最近规划', hint: '你最近生成的行程' },
 ]
 const activeTab = ref<HistoryFilter>('seed')
 const galleryLists = reactive<Record<HistoryFilter, TripSummary[]>>({
@@ -64,6 +65,8 @@ const galleryLists = reactive<Record<HistoryFilter, TripSummary[]>>({
 })
 const galleryLoading = ref(false)
 const galleryError = ref('')
+// 封面图加载失败的行程 id → 展示 emoji 占位，避免出现破图图标
+const brokenCovers = reactive<Record<number, boolean>>({})
 
 function coverSrc(url?: string | null): string | null {
   return imgProxy(url)
@@ -112,8 +115,9 @@ function togglePreference(tag: string) {
   }
 }
 
-function disabledDate(current: Date) {
-  return current && current.getTime() < new Date(today).getTime()
+function disabledDate(current: { format: (f: string) => string } | null) {
+  // antd-vue 4 传入的是 dayjs 对象；用 YYYY-MM-DD 字符串比较，避免时区问题
+  return !!current && current.format('YYYY-MM-DD') < today
 }
 
 async function handleSubmit() {
@@ -174,83 +178,123 @@ async function handleLogout() {
 
 <template>
   <div class="home">
-    <div class="hero">
-      <div v-if="username" class="user-chip">
-        👤 {{ username }}
-        <a class="user-logout" @click="handleLogout">退出</a>
+    <!-- 顶部导航 -->
+    <header class="nav">
+      <div class="nav-inner">
+        <div class="nav-brand">
+          <span class="brand-mark"><AppIcon name="compass" :size="18" color="#fff" /></span>
+          <span class="brand-text">智能旅行助手</span>
+        </div>
+        <div v-if="username" class="user-chip">
+          <span class="avatar">{{ username.slice(0, 1).toUpperCase() }}</span>
+          <span class="uname">{{ username }}</span>
+          <a class="logout" @click="handleLogout">退出</a>
+        </div>
       </div>
-      <h1 class="hero-title">🧭 智能旅行助手</h1>
-      <p class="hero-subtitle">
-        基于 HelloAgents 多智能体框架 · 景点搜索 / 天气查询 / 酒店推荐 / 行程规划
-        四个智能体为你量身定制旅行计划
+    </header>
+
+    <!-- Hero -->
+    <section class="hero">
+      <p class="eyebrow">多智能体 · 旅行规划</p>
+      <h1 class="hero-title">把攻略交给智能体，把时间留给<span class="hl">风景</span></h1>
+      <p class="hero-sub">
+        景点搜索、天气查询、酒店推荐、行程规划四个智能体协作，约一分钟为你生成一份贴合偏好、可编辑、可导出的完整行程。
       </p>
-    </div>
+      <div class="agent-chips">
+        <span class="agent-chip"><AppIcon name="mountain" :size="14" color="#275c45" />景点搜索</span>
+        <span class="agent-chip"><AppIcon name="cloud-sun" :size="14" color="#275c45" />天气查询</span>
+        <span class="agent-chip"><AppIcon name="hotel" :size="14" color="#275c45" />酒店推荐</span>
+        <span class="agent-chip"><AppIcon name="calendar-days" :size="14" color="#275c45" />行程规划</span>
+      </div>
+    </section>
 
-    <div class="form-card">
-      <a-form layout="vertical" size="large">
-        <a-row :gutter="16">
-          <a-col :xs="24" :md="10">
-            <a-form-item label="目的地" required>
-              <a-auto-complete
-                v-model:value="form.destination"
-                :options="destinationSuggestions.map((d) => ({ value: d }))"
-                placeholder="想去哪座城市？如：北京"
-                allow-clear
-              />
-            </a-form-item>
-          </a-col>
-          <a-col :xs="24" :md="7">
-            <a-form-item label="出发日期" required>
-              <a-date-picker
-                v-model:value="form.start_date"
-                value-format="YYYY-MM-DD"
-                :disabled-date="disabledDate"
-                style="width: 100%"
-              />
-            </a-form-item>
-          </a-col>
-          <a-col :xs="12" :md="4">
-            <a-form-item label="行程天数">
-              <a-input-number v-model:value="form.days" :min="1" :max="7" style="width: 100%" addon-after="天" />
-            </a-form-item>
-          </a-col>
-          <a-col :xs="12" :md="3">
-            <a-form-item label="总预算(元)">
-              <a-input-number v-model:value="form.budget" :min="0" :step="500" style="width: 100%" placeholder="选填" />
-            </a-form-item>
-          </a-col>
-        </a-row>
-
-        <a-form-item label="出行类型">
-          <a-radio-group v-model:value="form.group_type" option-type="button" :options="groupOptions" />
-        </a-form-item>
-
-        <a-form-item label="旅行偏好（可多选）">
-          <div class="pref-tags">
-            <a-checkable-tag
-              v-for="tag in preferenceOptions"
-              :key="tag"
-              :checked="form.preferences.includes(tag)"
-              @change="togglePreference(tag)"
-            >
-              {{ tag }}
-            </a-checkable-tag>
+    <!-- 规划搜索卡 -->
+    <section class="planner">
+      <div class="planner-card">
+        <div class="bar-grid">
+          <div class="bar-field">
+            <label class="bar-label"><AppIcon name="map-pin" :size="13" color="#8a978f" />目的地</label>
+            <a-auto-complete
+              v-model:value="form.destination"
+              :options="destinationSuggestions.map((d) => ({ value: d }))"
+              placeholder="想去哪座城市？"
+              allow-clear
+            />
           </div>
-        </a-form-item>
+          <div class="bar-field">
+            <label class="bar-label"><AppIcon name="calendar-days" :size="13" color="#8a978f" />出发日期</label>
+            <a-date-picker
+              v-model:value="form.start_date"
+              value-format="YYYY-MM-DD"
+              :disabled-date="disabledDate"
+            />
+          </div>
+          <div class="bar-field">
+            <label class="bar-label"><AppIcon name="clock" :size="13" color="#8a978f" />行程天数</label>
+            <div class="unit-wrap">
+              <a-input-number v-model:value="form.days" :min="1" :max="7" />
+              <span class="unit">天</span>
+            </div>
+          </div>
+          <div class="bar-field">
+            <label class="bar-label"><AppIcon name="wallet" :size="13" color="#8a978f" />总预算</label>
+            <div class="unit-wrap">
+              <a-input-number v-model:value="form.budget" :min="0" :step="500" placeholder="选填" />
+              <span class="unit">元</span>
+            </div>
+          </div>
+        </div>
 
-        <a-form-item label="特殊要求（选填）">
-          <a-textarea
-            v-model:value="form.notes"
-            placeholder="例如：不想太赶、希望多安排博物馆、有老人同行节奏放慢……"
-            :rows="3"
-          />
-        </a-form-item>
+        <div class="opt-area">
+          <div class="opt-group">
+            <span class="opt-label">出行类型</span>
+            <div class="chips">
+              <button
+                v-for="g in groupOptions"
+                :key="g"
+                type="button"
+                class="chip"
+                :class="{ on: form.group_type === g }"
+                @click="form.group_type = g"
+              >{{ g }}</button>
+            </div>
+          </div>
 
-        <a-button type="primary" size="large" block :loading="submitting" class="submit-btn" @click="handleSubmit">
-          ✨ 开始规划我的旅行
-        </a-button>
-      </a-form>
-    </div>
+          <div class="opt-group">
+            <span class="opt-label">旅行偏好 <em class="opt-optional">可多选</em></span>
+            <div class="chips">
+              <button
+                v-for="tag in preferenceOptions"
+                :key="tag"
+                type="button"
+                class="chip"
+                :class="{ on: form.preferences.includes(tag) }"
+                @click="togglePreference(tag)"
+              >{{ tag }}</button>
+            </div>
+          </div>
+
+          <div class="opt-group">
+            <span class="opt-label">特殊要求 <em class="opt-optional">选填</em></span>
+            <a-textarea
+              v-model:value="form.notes"
+              placeholder="例如：不想太赶、希望多安排博物馆、有老人同行节奏放慢……"
+              :rows="2"
+              auto-size
+              class="notes-input"
+            />
+          </div>
+        </div>
+
+        <div class="bar-footer">
+          <p class="footer-hint">生成约需 10~90 秒 · 任务后台执行，行程自动云端保存</p>
+          <button type="button" class="cta" :disabled="submitting" @click="handleSubmit">
+            <AppIcon name="sparkles" :size="17" color="#fff" />
+            开始规划我的旅行
+          </button>
+        </div>
+      </div>
+    </section>
 
     <a-modal :open="submitting" :closable="false" :keyboard="false" :mask-closable="false" :footer="null" centered>
       <div class="loading-body">
@@ -259,6 +303,7 @@ async function handleLogout() {
           :percent="progressPercent"
           :show-info="false"
           status="active"
+          :stroke-color="{ '0%': '#2f7254', '100%': '#5f9f80' }"
           class="loading-progress"
         />
         <p class="loading-title">{{ loadingTitle }}</p>
@@ -269,12 +314,22 @@ async function handleLogout() {
     <!-- 精选行程（作品集） -->
     <section class="gallery">
       <div class="gallery-head">
-        <h2 class="gallery-title">🗓 精选行程</h2>
-        <a-tabs v-model:active-key="activeTab" size="large">
-          <a-tab-pane v-for="t in galleryTabs" :key="t.key" :tab="t.label" />
-        </a-tabs>
-        <p class="gallery-hint">{{ galleryTabs.find((t) => t.key === activeTab)?.hint }}</p>
+        <div>
+          <p class="eyebrow">CURATED TRIPS</p>
+          <h2 class="gallery-title">精选行程</h2>
+        </div>
+        <div class="seg">
+          <button
+            v-for="t in galleryTabs"
+            :key="t.key"
+            type="button"
+            class="seg-btn"
+            :class="{ active: activeTab === t.key }"
+            @click="activeTab = t.key"
+          >{{ t.label }}</button>
+        </div>
       </div>
+      <p class="gallery-hint">{{ galleryTabs.find((t) => t.key === activeTab)?.hint }}</p>
 
       <a-spin :spinning="galleryLoading">
         <a-alert v-if="galleryError" type="warning" show-icon :message="galleryError" style="margin-bottom: 16px" />
@@ -287,12 +342,18 @@ async function handleLogout() {
               : '暂无示例作品'"
         />
         <div class="gallery-grid">
-          <div v-for="trip in galleryLists[activeTab]" :key="trip.id" class="trip-card" @click="openTrip(trip.id)">
+          <article v-for="trip in galleryLists[activeTab]" :key="trip.id" class="trip-card" @click="openTrip(trip.id)">
             <div class="trip-cover">
-              <img v-if="coverSrc(trip.cover_url)" :src="coverSrc(trip.cover_url)!" :alt="trip.destination" loading="lazy" />
-              <div v-else class="trip-cover-fallback">🏞️</div>
+              <img
+                v-if="coverSrc(trip.cover_url) && !brokenCovers[trip.id]"
+                :src="coverSrc(trip.cover_url)!"
+                :alt="trip.destination"
+                loading="lazy"
+                @error="brokenCovers[trip.id] = true"
+              />
+              <div v-else class="trip-cover-fallback"><AppIcon name="mountain-snow" :size="40" color="#93bfa6" /></div>
               <span class="trip-days">{{ trip.days }} 天</span>
-              <span v-if="trip.starred" class="trip-star">⭐</span>
+              <span v-if="trip.starred" class="trip-star"><AppIcon name="star" :size="15" color="#e89b3c" filled /></span>
             </div>
             <div class="trip-body">
               <div class="trip-title-row">
@@ -300,7 +361,7 @@ async function handleLogout() {
                 <span class="trip-budget">{{ trip.grand_total ? `¥${trip.grand_total.toLocaleString('zh-CN')}` : '预算待定' }}</span>
               </div>
               <div class="trip-themes">
-                <a-tag v-for="t in trip.themes" :key="t" color="blue" style="margin-inline-end: 0">{{ t }}</a-tag>
+                <span v-for="t in trip.themes" :key="t" class="ttag">{{ t }}</span>
               </div>
               <p class="trip-summary">{{ trip.summary }}</p>
               <div class="trip-footer">
@@ -314,10 +375,12 @@ async function handleLogout() {
                 >删除</a-button>
               </div>
             </div>
-          </div>
+          </article>
         </div>
       </a-spin>
     </section>
+
+    <footer class="home-foot">© 2026 智能旅行助手 · 多智能体框架驱动</footer>
   </div>
 </template>
 
@@ -325,75 +388,394 @@ async function handleLogout() {
 .home {
   min-height: 100vh;
   background:
-    radial-gradient(1200px 500px at 20% -10%, #e6f4ff 0%, transparent 60%),
-    radial-gradient(1000px 500px at 90% 0%, #fff7e6 0%, transparent 55%),
-    #f5f7fa;
-  padding: 48px 16px 64px;
+    radial-gradient(1100px 460px at 12% -6%, rgba(220, 235, 225, 0.9) 0%, transparent 62%),
+    radial-gradient(900px 420px at 96% 2%, rgba(253, 241, 220, 0.85) 0%, transparent 58%),
+    var(--bg);
+  padding-bottom: 56px;
 }
 
-.hero {
-  text-align: center;
-  margin-bottom: 32px;
-  position: relative;
+/* ---------- 顶部导航 ---------- */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  backdrop-filter: blur(10px);
+  background: rgba(243, 246, 241, 0.85);
+  border-bottom: 1px solid rgba(228, 233, 226, 0.8);
+}
+
+.nav-inner {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-mark {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, var(--brand-600), var(--brand-500));
+  box-shadow: 0 4px 10px rgba(47, 114, 84, 0.28);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+
+.brand-text {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--brand-900);
 }
 
 .user-chip {
-  position: absolute;
-  top: 0;
-  right: 0;
-  color: #595959;
-  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   background: #fff;
-  border: 1px solid #e8ecf2;
-  border-radius: 16px;
-  padding: 4px 12px;
-  box-shadow: 0 1px 4px rgba(31, 45, 88, 0.08);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 14px 4px 5px;
+  box-shadow: var(--shadow-sm);
 }
 
-.user-logout {
-  margin-left: 8px;
-  color: #1677ff;
+.avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--brand-600);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.uname {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-700);
+}
+
+.logout {
+  font-size: 12px;
+  color: var(--ink-400);
+}
+
+.logout:hover {
+  color: var(--coral-500);
+}
+
+/* ---------- Hero ---------- */
+.hero {
+  max-width: 820px;
+  margin: 0 auto;
+  text-align: center;
+  padding: 72px 24px 44px;
 }
 
 .hero-title {
-  font-size: 40px;
-  margin: 0 0 12px;
+  font-size: 46px;
+  line-height: 1.3;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: var(--ink-900);
+  margin: 18px 0 20px;
+  white-space: nowrap;
+}
+
+.hl {
+  position: relative;
+  color: var(--brand-600);
+  white-space: nowrap;
+}
+
+.hl::after {
+  content: '';
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 4px;
+  height: 12px;
+  background: rgba(242, 179, 76, 0.45);
+  border-radius: 6px;
+  z-index: -1;
+}
+
+.hero-sub {
+  font-size: 16px;
+  line-height: 1.9;
+  color: var(--ink-500);
+  max-width: 600px;
+  margin: 0 auto 26px;
+}
+
+.agent-chips {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand-700);
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid var(--brand-100);
+  border-radius: 999px;
+  padding: 6px 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ---------- 规划搜索卡 ---------- */
+.planner {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.planner-card {
+  background: var(--card);
+  border: 1px solid rgba(228, 233, 226, 0.9);
+  border-radius: var(--radius-xl);
+  padding: 30px 34px 26px;
+  box-shadow: var(--shadow-lg);
+}
+
+.bar-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1.2fr 0.9fr 1.1fr;
+}
+
+.bar-field {
+  position: relative;
+  padding: 2px 22px;
+  border-left: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.bar-field:first-child {
+  border-left: none;
+  padding-left: 0;
+}
+
+.bar-field:last-child {
+  padding-right: 0;
+}
+
+.bar-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
   font-weight: 700;
-  background: linear-gradient(90deg, #1677ff, #722ed1);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  letter-spacing: 0.04em;
+  color: var(--ink-400);
+  margin-bottom: 2px;
 }
 
-.hero-subtitle {
-  color: #595959;
+.bar-field :deep(.ant-input),
+.bar-field :deep(.ant-picker),
+.bar-field :deep(.ant-input-number),
+.bar-field :deep(.ant-select-selector) {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  padding-left: 0 !important;
+  font-weight: 600;
+  color: var(--ink-900);
   font-size: 15px;
-  max-width: 640px;
-  margin: 0 auto;
-  line-height: 1.8;
 }
 
-.form-card {
-  max-width: 860px;
-  margin: 0 auto;
-  background: #fff;
-  border-radius: 16px;
-  padding: 32px 32px 24px;
-  box-shadow: 0 8px 32px rgba(31, 45, 88, 0.08);
+.bar-field :deep(.ant-picker),
+.bar-field :deep(.ant-select),
+.bar-field :deep(.ant-input-number) {
+  width: 100% !important;
 }
 
-.pref-tags {
+.bar-field :deep(.ant-select-selection-placeholder),
+.bar-field :deep(.ant-input::placeholder),
+.bar-field :deep(.ant-picker-input > input::placeholder),
+.bar-field :deep(.ant-input-number-input-wrap input::placeholder) {
+  font-weight: 400;
+  color: var(--ink-300);
+}
+
+.unit-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.unit-wrap :deep(.ant-input-number) {
+  width: 100%;
+}
+
+.unit {
+  position: absolute;
+  right: 30px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-400);
+  pointer-events: none;
+}
+
+/* 步进按钮常驻显示（默认仅悬停出现），为右侧预留固定 22px 列，避免与单位文字重叠 */
+.unit-wrap :deep(.ant-input-number-handler-wrap) {
+  opacity: 1 !important;
+  background: transparent;
+  border-inline-start: 1px solid var(--line);
+}
+
+.unit-wrap :deep(.ant-input-number-handler) {
+  color: var(--ink-400);
+  border-color: var(--line);
+}
+
+.unit-wrap :deep(.ant-input-number-input) {
+  padding-right: 36px;
+}
+
+/* ---------- 选项区 ---------- */
+.opt-area {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px dashed var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.opt-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.opt-label {
+  flex-shrink: 0;
+  width: 100px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-700);
+  line-height: 34px;
+  white-space: nowrap;
+}
+
+.opt-optional {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ink-300);
+  margin-left: 2px;
+}
+
+.chips {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.submit-btn {
-  height: 48px;
-  font-size: 16px;
-  margin-top: 8px;
+.chip {
+  height: 34px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink-700);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
 }
 
+.chip:hover {
+  border-color: var(--brand-300);
+  color: var(--brand-700);
+}
+
+.chip.on {
+  background: var(--brand-600);
+  border-color: var(--brand-600);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 3px 10px rgba(47, 114, 84, 0.28);
+}
+
+.notes-input {
+  flex: 1;
+  border-radius: 12px;
+}
+
+.notes-input :deep(textarea) {
+  background: #f7f9f5;
+  border-radius: 12px;
+}
+
+.notes-input:focus-within {
+  box-shadow: 0 0 0 3px var(--brand-100);
+}
+
+/* ---------- 底部 CTA ---------- */
+.bar-footer {
+  margin-top: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.footer-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-400);
+}
+
+.cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 280px;
+  height: 52px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--brand-600), var(--brand-500));
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(47, 114, 84, 0.34);
+  transition: transform 0.15s, box-shadow 0.2s, filter 0.2s;
+}
+
+.cta:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 30px rgba(47, 114, 84, 0.42);
+  filter: brightness(1.05);
+}
+
+.cta:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+/* ---------- 加载弹窗 ---------- */
 .loading-body {
   text-align: center;
   padding: 16px 0 8px;
@@ -407,76 +789,94 @@ async function handleLogout() {
   margin: 18px 0 6px;
   font-size: 16px;
   font-weight: 600;
+  color: var(--ink-900);
 }
 
 .loading-hint {
-  color: #8c8c8c;
+  color: var(--ink-400);
   font-size: 13px;
   margin: 0;
 }
 
-/* ---------- 精选行程（作品集） ---------- */
+/* ---------- 精选行程 ---------- */
 .gallery {
-  max-width: 1080px;
-  margin: 48px auto 0;
+  max-width: 1160px;
+  margin: 64px auto 0;
+  padding: 0 24px;
 }
 
 .gallery-head {
   display: flex;
-  align-items: center;
-  gap: 8px 24px;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 24px;
   flex-wrap: wrap;
-  margin-bottom: 8px;
 }
 
 .gallery-title {
-  font-size: 24px;
-  font-weight: 700;
-  margin: 0;
-  white-space: nowrap;
+  font-size: 30px;
+  font-weight: 800;
+  color: var(--ink-900);
+  margin: 8px 0 0;
 }
 
-.gallery-head :deep(.ant-tabs) {
-  flex: 1;
-  min-width: 320px;
+.seg {
+  display: inline-flex;
+  background: #e9efe7;
+  border-radius: 999px;
+  padding: 4px;
 }
 
-.gallery-head :deep(.ant-tabs-nav) {
-  margin: 0;
+.seg-btn {
+  height: 36px;
+  padding: 0 20px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-500);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.seg-btn.active {
+  background: #fff;
+  color: var(--brand-700);
+  box-shadow: var(--shadow-sm);
 }
 
 .gallery-hint {
-  color: #8c8c8c;
+  color: var(--ink-400);
   font-size: 13px;
-  margin: -6px 0 20px;
+  margin: 10px 0 20px;
 }
 
 .gallery-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 20px;
+  gap: 22px;
 }
 
 .trip-card {
-  background: #fff;
-  border-radius: 14px;
+  background: var(--card);
+  border: 1px solid rgba(228, 233, 226, 0.9);
+  border-radius: var(--radius-lg);
   overflow: hidden;
   cursor: pointer;
-  box-shadow: 0 4px 18px rgba(31, 45, 88, 0.07);
-  transition:
-    transform 0.2s,
-    box-shadow 0.2s;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.2s, box-shadow 0.25s;
 }
 
 .trip-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 10px 28px rgba(31, 45, 88, 0.14);
+  transform: translateY(-5px);
+  box-shadow: var(--shadow-md);
 }
 
 .trip-cover {
   position: relative;
-  height: 150px;
-  background: linear-gradient(135deg, #e6f4ff, #f9f0ff);
+  height: 168px;
+  background: linear-gradient(135deg, var(--brand-100), var(--amber-100));
 }
 
 .trip-cover img {
@@ -492,74 +892,82 @@ async function handleLogout() {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 40px;
+  font-size: 44px;
 }
 
 .trip-days {
   position: absolute;
-  left: 10px;
-  top: 10px;
-  background: rgba(22, 119, 255, 0.92);
+  left: 12px;
+  top: 12px;
+  background: rgba(22, 53, 42, 0.82);
   color: #fff;
-  border-radius: 6px;
-  padding: 2px 8px;
+  border-radius: 999px;
+  padding: 3px 11px;
   font-size: 12px;
   font-weight: 600;
+  backdrop-filter: blur(4px);
 }
 
 .trip-star {
   position: absolute;
-  right: 10px;
-  top: 10px;
-  background: rgba(255, 255, 255, 0.92);
+  right: 12px;
+  top: 12px;
+  background: rgba(255, 255, 255, 0.94);
   border-radius: 50%;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 15px;
+  box-shadow: var(--shadow-sm);
 }
 
 .trip-body {
-  padding: 14px 16px 12px;
+  padding: 16px 18px 14px;
 }
 
 .trip-title-row {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
+  gap: 8px;
 }
 
 .trip-dest {
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 700;
+  color: var(--ink-900);
 }
 
 .trip-budget {
-  color: #cf1322;
-  font-weight: 600;
+  color: var(--amber-700);
+  font-weight: 700;
   font-size: 14px;
+  white-space: nowrap;
 }
 
 .trip-themes {
   display: flex;
-  gap: 4px;
+  gap: 6px;
   flex-wrap: wrap;
-  margin: 8px 0 6px;
+  margin: 9px 0 7px;
 }
 
-.trip-themes :deep(.ant-tag) {
+.ttag {
   font-size: 12px;
-  line-height: 18px;
-  padding: 0 6px;
+  line-height: 20px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: var(--brand-50);
+  color: var(--brand-700);
 }
 
 .trip-summary {
-  color: #595959;
+  color: var(--ink-500);
   font-size: 13px;
-  line-height: 1.6;
-  margin: 0 0 10px;
+  line-height: 1.65;
+  margin: 0 0 12px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -570,25 +978,77 @@ async function handleLogout() {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  border-top: 1px dashed var(--line);
+  padding-top: 10px;
 }
 
 .trip-date {
-  color: #bfbfbf;
+  color: var(--ink-300);
   font-size: 12px;
 }
 
-@media (max-width: 640px) {
+.home-foot {
+  text-align: center;
+  margin-top: 72px;
+  color: var(--ink-300);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+/* ---------- 响应式 ---------- */
+@media (max-width: 860px) {
+  .hero {
+    padding-top: 52px;
+  }
   .hero-title {
-    font-size: 28px;
+    font-size: 30px;
+    white-space: normal;
   }
-  .form-card {
-    margin: 0 12px;
-    padding: 16px;
+  .planner-card {
+    padding: 22px 18px 20px;
+    border-radius: var(--radius-lg);
   }
+  .bar-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .bar-field {
+    border-left: none;
+    padding: 10px 14px;
+    background: #f7f9f5;
+    border-radius: var(--radius-md);
+  }
+  .bar-field:first-child {
+    padding-left: 14px;
+  }
+  .bar-field:last-child {
+    padding-right: 14px;
+  }
+  .opt-group {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .opt-label {
+    line-height: 1.4;
+  }
+  .bar-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .cta {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 640px) {
   .gallery {
-    padding: 0 12px;
+    padding: 0 16px;
   }
   .gallery-grid {
+    grid-template-columns: 1fr;
+  }
+  .bar-grid {
     grid-template-columns: 1fr;
   }
 }

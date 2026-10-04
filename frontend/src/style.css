@@ -1,5 +1,61 @@
+/* =====================================================
+   设计系统 "Forest & Cream" —— 灵感源自 Dribbble 旅行类
+   高赞作品（AI itinerary / StayBox / EscapePlan）：
+   森林绿主色 + 奶油底 + 琥珀点缀，大圆角白卡，胶囊控件。
+   ===================================================== */
+:root {
+  /* 品牌绿阶 */
+  --brand-50: #eef5f0;
+  --brand-100: #dcebe1;
+  --brand-200: #bcd8c8;
+  --brand-300: #93bfa6;
+  --brand-400: #5f9f80;
+  --brand-500: #3f8765;
+  --brand-600: #2f7254;
+  --brand-700: #275c45;
+  --brand-800: #1f4636;
+  --brand-900: #16352a;
+
+  /* 琥珀点缀（价格/收藏/警示强调） */
+  --amber-100: #fdf1dc;
+  --amber-400: #f2b34c;
+  --amber-500: #e89b3c;
+  --amber-600: #c97f22;
+  --amber-700: #a3661a;
+
+  /* 珊瑚色（删除/错误倾向） */
+  --coral-500: #d96a4f;
+  --coral-100: #fbe9e3;
+
+  /* 中性（偏绿调的墨色） */
+  --ink-900: #1c2b24;
+  --ink-700: #3c4a42;
+  --ink-500: #67756d;
+  --ink-400: #8a978f;
+  --ink-300: #aeb8b1;
+
+  --line: #e4e9e2;
+  --bg: #f3f6f1;
+  --card: #ffffff;
+
+  /* 圆角 */
+  --radius-xl: 28px;
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+
+  /* 阴影（带一点绿色调的柔影） */
+  --shadow-sm: 0 1px 2px rgba(22, 53, 42, 0.05), 0 2px 10px rgba(22, 53, 42, 0.05);
+  --shadow-md: 0 2px 4px rgba(22, 53, 42, 0.04), 0 6px 20px rgba(22, 53, 42, 0.09);
+  --shadow-lg: 0 4px 10px rgba(22, 53, 42, 0.06), 0 16px 40px rgba(22, 53, 42, 0.14);
+}
+
 * {
   box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 html,
@@ -12,8 +68,14 @@ body {
     'Helvetica Neue',
     Arial,
     sans-serif;
-  background: #f5f7fa;
-  color: #262626;
+  background: var(--bg);
+  color: var(--ink-900);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--brand-200);
+  color: var(--brand-900);
 }
 
 ::-webkit-scrollbar {
@@ -21,9 +83,31 @@ body {
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #c4c9d4;
+  background: var(--brand-200);
   border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--brand-300);
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* 共享小部件：编辑感栏目眉标（● LABEL） */
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--brand-600);
+}
+.eyebrow::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--brand-500);
+  box-shadow: 0 0 0 3px var(--brand-100);
 }
