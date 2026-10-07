@@ -1,12 +1,20 @@
 # 智能旅行助手一键部署：MySQL + Redis + 后端 + 前端（nginx 托管并反代 /api）
 #
 # 使用前提：backend/.env 已配置（LLM_API_KEY / AMAP_API_KEY 等）。
-# MYSQL_HOST / REDIS_URL 由本文件强制指向容器服务，.env 中的 localhost 配置会被覆盖。
+# MYSQL_HOST / MYSQL_PASSWORD / REDIS_URL 由本文件强制指向容器服务，.env 中的 localhost 配置会被覆盖。
 #
-# 启动：docker compose up -d --build     前端访问 http://localhost:8080
+# 部署自定义变量（docker compose 自动读取项目根目录 .env，可复制 .env.example）：
+#   MYSQL_ROOT_PASSWORD  MySQL root 密码，同时注入给后端，二者必须一致
+#
+# 启动：docker compose up -d --build     前端访问 http://服务器IP
 services:
   mysql:
     image: mysql:8.0
+    # 2 vCPU / 2 GiB 小规格机器内存优化
+    command:
+      --innodb-buffer-pool-size=128M
+      --max-connections=50
+      --performance-schema=OFF
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-trip_planner_2026}
       MYSQL_DATABASE: trip_planner
@@ -17,16 +25,19 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
 
   backend:
     build: ./backend
     env_file: ./backend/.env
     environment:
-      # 容器网络内固定指向服务名，覆盖 .env 的 localhost
+      # 容器网络内固定指向服务名，密码与 mysql 服务保持一致，覆盖 .env 的 localhost 配置
       MYSQL_HOST: mysql
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-trip_planner_2026}
       REDIS_URL: redis://redis:6379/0
     depends_on:
       mysql:
@@ -34,7 +45,8 @@ services:
       redis:
         condition: service_started
     ports:
-      - "8000:8000"
+      # 仅绑定本机回环：后端不直接对公网暴露，外部统一走前端 nginx 的 /api 反代
+      - "127.0.0.1:8000:8000"
     restart: unless-stopped
 
   frontend:
@@ -42,7 +54,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "8080:80"
+      - "80:80"
     restart: unless-stopped
 
 volumes:

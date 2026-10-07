@@ -27,3 +27,6 @@ Thumbs.db
 
 # 测试缓存
 .pytest_cache/
+
+# docker compose 部署变量（含 MySQL 密码）
+/.env
