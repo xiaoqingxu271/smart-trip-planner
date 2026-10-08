@@ -190,6 +190,19 @@ export async function geocode(address: string, city = ''): Promise<GeocodeResult
   return request.post('/utils/geocode', { address, city })
 }
 
+// ---------- POI 名称解析（导航兜底：餐厅/酒店无坐标时点击实时查询） ----------
+
+export interface PoiResult {
+  name: string
+  longitude: number
+  latitude: number
+  address?: string
+}
+
+export async function resolvePoi(keyword: string, city: string): Promise<PoiResult> {
+  return request.get('/utils/poi', { params: { keyword, city } })
+}
+
 // ---------- 历史与作品集 ----------
 
 export type HistoryFilter = 'recent' | 'starred' | 'seed'

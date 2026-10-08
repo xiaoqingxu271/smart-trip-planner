@@ -7,6 +7,7 @@ import { exportElementAsPdf, exportElementAsPng } from '@/utils/exporter'
 import { getTripRoutes, getAppConfig, geocode, getTripDetail, imgProxy, replanTrip, starTrip, swapBackup, tripIcalUrl, updateTrip } from '@/services/api'
 import type { AppConfig, Attraction, DayRoute, Feedback, TripPlan } from '@/types'
 import AppIcon from '@/components/AppIcon.vue'
+import AmapNavButton from '@/components/AmapNavButton.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -610,6 +611,7 @@ onBeforeUnmount(() => {
                         <a-tag v-if="attr.ticket_price > 0" color="orange">门票 {{ money(attr.ticket_price) }}</a-tag>
                         <a-tag v-else color="green">免费</a-tag>
                         <a-tag><AppIcon name="clock" :size="11" color="#67756d" /> {{ attr.duration }}</a-tag>
+                        <AmapNavButton :name="attr.name" :location="attr.location" :city="tripPlan.destination" />
                         <a-dropdown v-if="tripId && !editing" class="no-export">
                           <a-button size="small" type="text" class="fb-btn">有问题？</a-button>
                           <template #overlay>
@@ -686,6 +688,7 @@ onBeforeUnmount(() => {
                     <div>
                       <div class="meal-name">
                         {{ meal.restaurant }}
+                        <AmapNavButton :name="meal.restaurant" :location="meal.location" :city="tripPlan.destination" />
                         <a-dropdown v-if="tripId && !editing" class="no-export">
                           <a-button size="small" type="text" class="fb-btn">有问题？</a-button>
                           <template #overlay>
@@ -720,6 +723,7 @@ onBeforeUnmount(() => {
                     <div class="hotel-name">
                       {{ day.hotel.name }}
                       <a-rate :value="day.hotel.rating / 1" disabled allow-half style="font-size: 12px; margin-left: 8px" />
+                      <AmapNavButton :name="day.hotel.name" :location="day.hotel.location" :city="tripPlan.destination" />
                       <a-dropdown v-if="tripId && !editing" class="no-export">
                         <a-button size="small" type="text" class="fb-btn">有问题？</a-button>
                         <template #overlay>

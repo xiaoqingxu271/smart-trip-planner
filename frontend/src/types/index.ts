@@ -26,6 +26,8 @@ export interface Meal {
   specialty: string
   cost: number
   image_url?: string | null
+  // 后端图片增强时由 POI 搜索富化；老数据可能没有（导航时前端实时解析兜底）
+  location?: Location | null
 }
 
 export interface Hotel {

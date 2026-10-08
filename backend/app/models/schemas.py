@@ -44,6 +44,8 @@ class Meal(BaseModel):
     specialty: Annotated[str, StringConstraints(max_length=100)] = Field("", description="推荐菜品")
     cost: float = Field(0, ge=0, description="人均消费（元）")
     image_url: Optional[UrlText] = Field(None, description="餐厅配图")
+    # Planner 不产出餐厅坐标；由图片增强服务搜 POI 图时顺带富化（前端导航用）
+    location: Optional[Location] = Field(None, description="经纬度坐标（图片增强时富化）")
 
 
 class Hotel(BaseModel):

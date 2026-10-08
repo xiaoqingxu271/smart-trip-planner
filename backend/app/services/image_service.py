@@ -17,6 +17,7 @@ amap_pacer.pace() 全局节拍（与校验器/MCP 调用共享同一计拍，谁
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
 from typing import Any
@@ -24,7 +25,7 @@ from typing import Any
 import httpx
 
 from ..config import Settings
-from ..models.schemas import TripPlan
+from ..models.schemas import Location, TripPlan
 from ..storage.cache import Cache
 from .amap_pacer import pace
 from .unsplash_service import UnsplashService
@@ -51,6 +52,28 @@ def _first_photo(poi: dict) -> str | None:
     return None
 
 
+def _parse_location(raw: Any) -> Location | None:
+    """"116.487585,39.991754" → Location。"""
+    try:
+        lng, lat = str(raw).split(",")
+        return Location(longitude=float(lng), latitude=float(lat))
+    except (ValueError, TypeError):
+        return None
+
+
+def _decode_cached_poi(raw: str) -> dict | None:
+    """解码 Redis 缓存值，兼容历史格式：新版 JSON 记录 / 纯图片 URL / "-"（无结果）。"""
+    if raw == "-":
+        return None
+    try:
+        rec = json.loads(raw)
+        if isinstance(rec, dict) and ("photo" in rec or "location" in rec):
+            return rec
+    except ValueError:
+        pass
+    return {"photo": raw, "location": None}  # 旧格式：只缓存了图片地址
+
+
 class ImageService:
     AMAP_PLACE_TEXT = "https://restapi.amap.com/v3/place/text"
 
@@ -59,7 +82,7 @@ class ImageService:
         self.unsplash = UnsplashService(settings)
         # 两级缓存：Redis（跨重启共享）+ 进程内 dict（Redis 不可用时的兜底）
         self._redis = Cache(settings)
-        self._cache: dict[str, str | None] = {}
+        self._cache: dict[str, dict | None] = {}
         self._lock = threading.Lock()
 
     # ---------- 对外入口 ----------
@@ -83,13 +106,18 @@ class ImageService:
     # ---------- 内部实现 ----------
 
     def _fill(self, obj: Any, name: str, city: str) -> None:
-        url = self._amap_photo(name, city)
+        info = self._amap_poi(name, city)
+        url = info.get("photo") if info else None
         if url is None:
             url = self.unsplash.search_photo_url(f"{city} travel")
         if url:
             obj.image_url = url
+        # 顺手富化坐标：餐厅等 Planner 不产出坐标的对象由此获得真实 POI 位置（前端导航用）
+        if info and info.get("location") and getattr(obj, "location", None) is None:
+            obj.location = _parse_location(info["location"])
 
-    def _amap_photo(self, name: str, city: str) -> str | None:
+    def _amap_poi(self, name: str, city: str) -> dict | None:
+        """POI 搜索结果 {"photo": 图片地址|None, "location": "lng,lat"|None}；未搜到返回 None。"""
         cache_key = f"{city}::{name}"
         redis_key = f"poi:photo:{hashlib.md5(cache_key.encode()).hexdigest()}"
         with self._lock:
@@ -98,30 +126,36 @@ class ImageService:
         # L1: Redis（后端重启也不丢，节省高德配额）
         cached = self._redis.get(redis_key)
         if cached:
-            url = None if cached == "-" else cached
-            with self._lock:
-                self._cache[cache_key] = url
-            return url
-        url = self._fetch_amap_photo(name, city)
-        # 未命中也缓存为 "-"，避免反复消耗配额搜索无图 POI
-        self._redis.set(redis_key, url or "-", _POI_CACHE_TTL)
+            info = _decode_cached_poi(cached)
+        else:
+            info = self._fetch_amap_poi(name, city)
+            # 未命中也缓存为 "-"，避免反复消耗配额搜索无图 POI
+            self._redis.set(redis_key, json.dumps(info, ensure_ascii=False) if info else "-", _POI_CACHE_TTL)
         with self._lock:
-            self._cache[cache_key] = url
-        return url
+            self._cache[cache_key] = info
+        return info
 
-    def _fetch_amap_photo(self, name: str, city: str) -> str | None:
+    def _fetch_amap_poi(self, name: str, city: str) -> dict | None:
         if not self.settings.amap_api_key:
             return None
         # Planner 给出的名称常带括号后缀（如"知味观（湖滨总店）"），原样搜可能命中差；
         # 先用主名（去括号）搜，再退回全名各试一次。
         primary = name.split("（")[0].split("(")[0].strip() or name
+        best_loc: str | None = None
         for keyword in dict.fromkeys([primary, name]):
-            url = self._search_photo(keyword, city, name)
+            poi = self._search_poi(keyword, city, name)
+            if not poi:
+                continue
+            url = _first_photo(poi)
+            loc = poi.get("location")
             if url:
-                return url
-        return None
+                return {"photo": url, "location": loc or best_loc}
+            if loc and best_loc is None:
+                best_loc = loc
+        return {"photo": None, "location": best_loc} if best_loc else None
 
-    def _search_photo(self, keyword: str, city: str, expect: str) -> str | None:
+    def _search_poi(self, keyword: str, city: str, expect: str) -> dict | None:
+        """place/text 搜索：优先名称匹配且有图的 POI，其次有图的 POI，再次名称匹配的 POI。"""
         body = None
         for attempt in range(3):
             pace(_REQUEST_INTERVAL)  # 调用前过全局节拍，最后一次调用后不再空等
@@ -154,15 +188,18 @@ class ImageService:
         pois = body.get("pois") or []
         if not pois:
             return None
-        # 优先取名称能对上的 POI（搜索结果偶尔会插入相近 POI）
-        for poi in pois:
+        # 名称匹配判定：搜索结果偶尔会插入相近 POI，名称能对上的优先
+        def _matched(poi: dict) -> bool:
             poi_name = str(poi.get("name", ""))
-            if poi_name and (poi_name in expect or expect in poi_name):
-                url = _first_photo(poi)
-                if url:
-                    return url
+            return bool(poi_name) and (poi_name in expect or expect in poi_name)
+
         for poi in pois:
-            url = _first_photo(poi)
-            if url:
-                return url
+            if _matched(poi) and _first_photo(poi):
+                return poi
+        for poi in pois:
+            if _first_photo(poi):
+                return poi
+        for poi in pois:
+            if _matched(poi):
+                return poi  # 无图但名称对上：坐标仍可用于导航富化
         return None

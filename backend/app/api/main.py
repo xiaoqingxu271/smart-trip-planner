@@ -324,6 +324,59 @@ async def geocode(req: GeocodeRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class PoiResolveResponse(BaseModel):
+    name: str
+    longitude: float
+    latitude: float
+    address: str = ""
+
+
+@app.get("/api/utils/poi", response_model=PoiResolveResponse)
+async def resolve_poi(keyword: str, city: str = ""):
+    """POI 名称 → 坐标（导航兜底：餐厅/酒店无坐标时前端点击实时解析）。
+
+    与地理编码相比，POI 搜索对餐厅/酒店等门店名命中率更高；
+    名称常带括号后缀（如"全聚德（前门店）"），主名命中率更高。
+    """
+    if settings.demo_mode or not settings.ready_for_agents:
+        raise HTTPException(status_code=503, detail="演示模式下不支持 POI 解析，请配置密钥后使用真实模式。")
+    if not keyword.strip():
+        raise HTTPException(status_code=400, detail="keyword 不能为空")
+    planner = get_planner(settings)
+
+    def _run() -> PoiResolveResponse:
+        primary = keyword.split("（")[0].split("(")[0].strip() or keyword
+        params: dict = {"keywords": primary}
+        if city:
+            params["city"] = city
+            params["citylimit"] = "true"
+        try:
+            text = planner.mcp_tool.client.call_tool("maps_text_search", params)
+        except MCPError as e:
+            raise PlannerError(str(e)) from e
+        try:
+            data = json.loads(text)
+            pois = data.get("pois") or []
+            if not pois:
+                raise PlannerError("未查询到该地点，可在高德地图中手动搜索。")
+            poi = pois[0]
+            lng, lat = str(poi["location"]).split(",")
+            return PoiResolveResponse(
+                name=poi.get("name", keyword),
+                longitude=float(lng),
+                latitude=float(lat),
+                address=poi.get("address", "") or "",
+            )
+        except (ValueError, KeyError, TypeError) as e:
+            raise PlannerError(f"POI 搜索结果解析失败: {e}") from e
+
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(_io_executor, _run)
+    except PlannerError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 RESULT_TTL = 24 * 3600  # plan:result:{hash} 结果缓存 24h
 
 
