@@ -1,0 +1,3 @@
+# 构建上下文瘦身：npm ci 在容器内执行，依赖无需进上下文
+node_modules
+dist

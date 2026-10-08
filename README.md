@@ -117,8 +117,10 @@ Windows 用户也可直接双击 `start_backend.bat` 与 `start_frontend.bat`。
 ```bash
 # 前提：backend/.env 已配置密钥；MySQL/Redis 由容器提供
 docker compose up -d --build
-# 前端访问 http://localhost:8080，后端 API 在 http://localhost:8000
+# 前端访问 http://localhost:80；后端仅绑定 127.0.0.1:8000，公网统一走前端 /api 反代
 ```
+
+> 阿里云轻量应用服务器（2C2G）从零到上线的完整部署流程（含镜像加速、Swap、串行构建、清理重部署），见 [docs/deploy-guide.md](docs/deploy-guide.md)。
 
 ### 测试
 

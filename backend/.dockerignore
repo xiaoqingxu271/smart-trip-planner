@@ -1,0 +1,11 @@
+# 密钥不打进镜像（compose env_file 注入）；运行时产物不进构建上下文
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+logs/
+memory/
+tool-output/
+.image_cache/
