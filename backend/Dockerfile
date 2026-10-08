@@ -1,10 +1,15 @@
 # 智能旅行助手后端：Python + Node（高德 MCP 服务器以 npx 子进程运行，容器内需要 Node）
-FROM python:3.14-slim
+# 使用 3.12-slim：生态兼容性最好；勿用 3.14（标签新，部分依赖无预编译 wheel）
+FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates xz-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# 从 npmmirror 安装 Node.js 22（比 nodesource 稳定，npmmirror 全球可访问）
+RUN curl -fsSL https://npmmirror.com/mirrors/node/v22.23.3/node-v22.23.3-linux-x64.tar.xz \
+    | tar -xJ --strip-components=1 -C /usr/local \
+    && node --version && npm --version \
+    && npm config set registry https://registry.npmmirror.com
 
 WORKDIR /app
 
