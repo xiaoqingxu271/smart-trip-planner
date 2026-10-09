@@ -50,7 +50,15 @@ class UserAuthMiddleware(BaseHTTPMiddleware):
     认证必须 fail-closed——Redis 不可用时 Token 无法核验，一律 401。
     """
 
-    PUBLIC_PATHS = {"/api/health", "/api/auth/register", "/api/auth/login"}
+    PUBLIC_PATHS = {
+        "/api/health",
+        "/api/config",  # 地图初始化公开配置，登录前必须能访问
+        "/api/utils/image",  # 图片代理（前端 img 标签，走 ?token= 查询参数）
+        "/api/utils/geocode",  # 地理编码（行程规划前地址搜索）
+        "/api/utils/poi",  # POI 解析（行程规划前地址补全）
+        "/api/auth/register",
+        "/api/auth/login",
+    }
 
     def __init__(self, app, settings: Settings, cache: Cache):
         super().__init__(app)
