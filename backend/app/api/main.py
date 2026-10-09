@@ -173,8 +173,18 @@ async def health():
 
 
 @app.get("/api/metrics")
-async def metrics_endpoint():
-    """Prometheus 风格指标（可选采集端点，进程内计数）。"""
+async def metrics_endpoint(http: Request):
+    """Prometheus 风格指标（可选采集端点，进程内计数；批次 E）。
+
+    仅当 settings.metrics_token 配置后才暴露，否则 404；采集器经
+    X-Metrics-Token 头或 ?metrics_token= 查询参数携带令牌校验。
+    """
+    token = settings.metrics_token
+    if not token:
+        raise HTTPException(status_code=404, detail="未启用指标端点")
+    given = http.headers.get("x-metrics-token") or http.query_params.get("metrics_token") or ""
+    if not secrets.compare_digest(given.encode(), token.encode()):
+        raise HTTPException(status_code=401, detail="需要运维令牌")
     return Response(content=metrics.prometheus_text(), media_type="text/plain; version=0.0.4")
 
 
@@ -452,7 +462,7 @@ def _finalize_plan(request: TripRequest, plan: TripPlan) -> None:
     # 门票口径归一化（批次 C）：无真实来源的精确票价是 LLM 编数，一律清零，
     # 改用 has_ticket 表达「是否需购票」；attraction_total 只累计有真实来源（ticket_from）的票价。
     for d in plan.daily_plans:
-        for a in d.attractions:
+        for a in list(d.attractions) + list(d.backup_attractions or []):
             if a.ticket_from:
                 continue
             if a.ticket_price > 0:
@@ -526,10 +536,20 @@ def _repair_after_edit(request: TripRequest, plan: TripPlan) -> None:
         issues = validate_plan(plan, request, planner.mcp_tool.client, planner._cache)
     except Exception:  # noqa: BLE001
         logger.warning("编辑后校验失败（跳过）", exc_info=True)
-        return
-    for text in (i["text"] for i in issues if i.get("strong", True)):
-        if text not in plan.warnings:
-            plan.warnings.append(text)
+    else:
+        for text in (i["text"] for i in issues if i.get("strong", True)):
+            if text not in plan.warnings:
+                plan.warnings.append(text)
+
+    # 3. 回填酒店起价与高德唤端链接（编辑/换备选新增或替换的项补齐，二者幂等）
+    try:
+        enrich_hotel_prices(plan, settings)
+    except Exception:  # noqa: BLE001
+        logger.warning("编辑后价格区间化失败（跳过）", exc_info=True)
+    try:
+        apply_launch_links(plan, settings)
+    except Exception:  # noqa: BLE001
+        logger.warning("编辑后唤端链接生成失败（跳过）", exc_info=True)
 
 
 def _quota_allowed(user_id: int | None) -> tuple[bool, str | None]:
@@ -548,6 +568,16 @@ def _quota_allowed(user_id: int | None) -> tuple[bool, str | None]:
     if used > settings.quota_plan_daily:
         return False, f"今日规划次数已达上限（{settings.quota_plan_daily} 次/天），请明天再试。"
     return True, None
+
+
+def _result_cache_hit(request: TripRequest) -> bool:
+    """结果缓存是否已存在（批次 E）：命中缓存零 LLM 开销，不计入每日配额。"""
+    if _cache is None:
+        return False
+    try:
+        return _cache.get(f"plan:result:{_request_hash(request)}") is not None
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _plan_execute(request: TripRequest, progress=None, user_id: int | None = None) -> TripPlan:
@@ -669,9 +699,12 @@ async def create_trip_plan(request: TripRequest, http: Request):
     loop = asyncio.get_running_loop()
     demo = settings.demo_mode or not settings.ready_for_agents
     if not demo:
-        allowed, msg = await loop.run_in_executor(_io_executor, _quota_allowed, _uid(http))
-        if not allowed:
-            raise HTTPException(status_code=429, detail=msg)
+        # 结果缓存命中零成本，不计入每日配额
+        cached = await loop.run_in_executor(_io_executor, _result_cache_hit, request)
+        if not cached:
+            allowed, msg = await loop.run_in_executor(_io_executor, _quota_allowed, _uid(http))
+            if not allowed:
+                raise HTTPException(status_code=429, detail=msg)
     try:
         return await loop.run_in_executor(_pipeline_executor, _plan_full, request, _uid(http))
     except PlanJobError as e:
@@ -711,9 +744,11 @@ async def submit_plan_job(request: TripRequest, http: Request):
     # 闸门与规划锁在提交时同步获取：冲突立即反馈；由后台任务持有至执行结束
     lock_token: str | None = None
     if not demo:
-        allowed, quota_msg = await loop.run_in_executor(_io_executor, _quota_allowed, _uid(http))
-        if not allowed:
-            raise HTTPException(status_code=429, detail=quota_msg)
+        cached = await loop.run_in_executor(_io_executor, _result_cache_hit, request)
+        if not cached:
+            allowed, quota_msg = await loop.run_in_executor(_io_executor, _quota_allowed, _uid(http))
+            if not allowed:
+                raise HTTPException(status_code=429, detail=quota_msg)
         if not _plan_gate.acquire(blocking=False):
             raise HTTPException(status_code=429, detail="系统正在规划其他行程，请稍后再试。")
         if store and _cache:

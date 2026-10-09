@@ -31,7 +31,7 @@ class AccessCodeMiddleware(BaseHTTPMiddleware):
         if not self._password:
             return await call_next(request)
         path = request.url.path
-        if path == "/api/health" or path.startswith("/api/trip/share/") or not path.startswith("/api/"):
+        if path == "/api/health" or path == "/api/metrics" or path.startswith("/api/trip/share/") or not path.startswith("/api/"):
             return await call_next(request)
         given = request.headers.get("x-access-code") or request.query_params.get("code") or ""
         if secrets.compare_digest(given.encode(), self._password.encode()):
@@ -52,6 +52,7 @@ class UserAuthMiddleware(BaseHTTPMiddleware):
 
     PUBLIC_PATHS = {
         "/api/health",
+        "/api/metrics",  # 仅要求 METRICS_TOKEN（端点内自校验），不要求用户登录
         "/api/config",  # 地图初始化公开配置，登录前必须能访问
         "/api/utils/image",  # 图片代理（前端 img 标签，走 ?token= 查询参数）
         "/api/utils/geocode",  # 地理编码（行程规划前地址搜索）

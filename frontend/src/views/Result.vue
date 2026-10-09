@@ -288,7 +288,7 @@ function moveAttraction(dayIdx: number, attrIdx: number, dir: -1 | 1) {
 
 const addModalOpen = ref(false)
 const addSubmitting = ref(false)
-const addForm = reactive({ name: '', address: '', duration: '2小时', ticket_price: 0, description: '' })
+const addForm = reactive({ name: '', address: '', duration: '2小时', has_ticket: false, description: '' })
 let addTargetDay = 0
 
 function openAddModal(dayIdx: number) {
@@ -296,7 +296,7 @@ function openAddModal(dayIdx: number) {
   addForm.name = ''
   addForm.address = ''
   addForm.duration = '2小时'
-  addForm.ticket_price = 0
+  addForm.has_ticket = false
   addForm.description = ''
   addModalOpen.value = true
 }
@@ -319,7 +319,8 @@ async function confirmAdd() {
       location: { longitude: geo.longitude, latitude: geo.latitude },
       address: geo.formatted_address || addForm.address.trim(),
       duration: addForm.duration || '2小时',
-      ticket_price: Number(addForm.ticket_price) || 0,
+      ticket_price: 0,
+      has_ticket: addForm.has_ticket,
       recommended_reason: '手动添加',
       image_url: null,
     })
@@ -816,7 +817,7 @@ onBeforeUnmount(() => {
             <div class="b-item b-total">
               <span class="b-label">估算总计</span>
               <span class="b-value">{{ money(tripPlan.budget.grand_total) }}</span>
-              <span class="b-note">含门票 / 住宿 / 餐饮 / 市内交通</span>
+              <span class="b-note">住宿 / 餐饮 / 市内交通（门票以官网为准）</span>
             </div>
           </div>
           <p v-if="tripPlan.budget_note" class="budget-note">{{ tripPlan.budget_note }}</p>
@@ -905,8 +906,8 @@ onBeforeUnmount(() => {
             </a-form-item>
           </a-col>
           <a-col :span="12">
-            <a-form-item label="门票价格(元)">
-              <a-input-number v-model:value="addForm.ticket_price" :min="0" style="width: 100%" />
+            <a-form-item label="门票">
+              <a-switch v-model:checked="addForm.has_ticket" checked-children="需购票" un-checked-children="免费" />
             </a-form-item>
           </a-col>
         </a-row>

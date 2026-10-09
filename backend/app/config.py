@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     # pacer 按 1/qps 作为最小调用间隔；image/route 等所有高德调用统一走此处。
     amap_qps: float = 3.0
 
+    # ---------- 运维指标端点（批次 E） ----------
+    # /api/metrics 的 Prometheus 采集令牌；留空则关闭该端点（返回 404），仅在需要被
+    # Prometheus 等采集器抓取时配置，避免把 LLM 用量/规划失败率暴露给普通用户。
+    metrics_token: str = ""
+
     @property
     def mcp_args_list(self) -> list[str]:
         try:
