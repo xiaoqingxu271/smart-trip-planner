@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS trips (
   user_id      BIGINT       NULL,                  -- 所属用户（NULL=无主，全员可读；见 README 可见性规则）
   parent_id    BIGINT       NULL,                  -- 重规划版本链：指向被反馈的原行程
   share_token  VARCHAR(32)  NULL,                  -- 只读分享链接的随机句柄（独立于登录态）
+  share_created_at DATETIME NULL,                -- 分享令牌生成时间（据此判断是否过期）
   created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_created (created_at),
   INDEX idx_starred (starred, created_at),

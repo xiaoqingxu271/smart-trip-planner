@@ -158,27 +158,58 @@ class TripStore:
         return True
 
     def get_or_create_share_token(self, trip_id: int, user_id: int | None = None) -> str | None:
-        """生成/复用只读分享令牌（仅限本人行程；示例/无主行程不生成）。"""
+        """生成/复用只读分享令牌（仅限本人行程；示例/无主行程不生成）。
+
+        已有且未过期的令牌直接复用；已过期则轮换为新令牌（批次 F）。
+        """
         if user_id is not None and not self._is_owned_by(trip_id, user_id):
             return None
+        ttl = self.settings.share_ttl_days
         with connection(self.settings) as conn, conn.cursor() as cur:
-            cur.execute("SELECT share_token FROM trips WHERE id = %s", (trip_id,))
-            row = cur.fetchone()
-            if not row:
+            cur.execute("SELECT id FROM trips WHERE id = %s", (trip_id,))
+            if cur.fetchone() is None:
                 return None
-            token = row.get("share_token")
-            if token:
-                return token
+            cur.execute(
+                "SELECT share_token FROM trips WHERE id = %s"
+                " AND share_created_at IS NOT NULL"
+                " AND share_created_at > (NOW() - INTERVAL %s DAY)",
+                (trip_id, ttl),
+            )
+            row = cur.fetchone()
+            if row and row.get("share_token"):
+                return row["share_token"]
             token = secrets.token_hex(12)
-            cur.execute("UPDATE trips SET share_token = %s WHERE id = %s", (token, trip_id))
+            cur.execute(
+                "UPDATE trips SET share_token = %s, share_created_at = NOW() WHERE id = %s",
+                (token, trip_id),
+            )
             return token
 
-    def get_share_detail(self, token: str) -> dict[str, Any] | None:
-        """按分享令牌只读取行程（独立于登录态，不做用户可见性过滤）。"""
+    def revoke_share(self, trip_id: int, user_id: int | None = None) -> bool:
+        """撤销分享（批次 F）：清空令牌与时间戳，历史分享链接即刻失效。"""
+        if user_id is not None and not self._is_owned_by(trip_id, user_id):
+            return False
         with connection(self.settings) as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT id, request_json, plan_json, created_at FROM trips WHERE share_token = %s",
-                (token,),
+                "UPDATE trips SET share_token = NULL, share_created_at = NULL"
+                " WHERE id = %s",
+                (trip_id,),
+            )
+        return True
+
+    def get_share_detail(self, token: str) -> dict[str, Any] | None:
+        """按分享令牌只读取行程（独立于登录态，不做用户可见性过滤）。
+
+        过期的令牌按不存在处理，返回 None（批次 F）。
+        """
+        ttl = self.settings.share_ttl_days
+        with connection(self.settings) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, request_json, plan_json, created_at FROM trips"
+                " WHERE share_token = %s"
+                " AND share_created_at IS NOT NULL"
+                " AND share_created_at > (NOW() - INTERVAL %s DAY)",
+                (token, ttl),
             )
             row = cur.fetchone()
         if not row:

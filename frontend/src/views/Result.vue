@@ -5,7 +5,7 @@ import { message } from 'ant-design-vue'
 import AMapLoader from '@amap/amap-jsapi-loader'
 import { exportElementAsPdf, exportElementAsPng } from '@/utils/exporter'
 import { openExternal } from '@/utils/amapNav'
-import { getTripRoutes, getAppConfig, geocode, getTripDetail, imgProxy, replanTrip, createShare, starTrip, swapBackup, tripIcalUrl, updateTrip } from '@/services/api'
+import { getTripRoutes, getAppConfig, geocode, getTripDetail, imgProxy, replanTrip, createShare, revokeShare, starTrip, swapBackup, tripIcalUrl, updateTrip } from '@/services/api'
 import type { AppConfig, Attraction, DayRoute, Feedback, TripPlan } from '@/types'
 import AppIcon from '@/components/AppIcon.vue'
 import AmapNavButton from '@/components/AmapNavButton.vue'
@@ -433,6 +433,16 @@ async function shareTrip() {
   }
 }
 
+async function revokeTripShare() {
+  if (!tripId.value) return
+  try {
+    await revokeShare(tripId.value)
+    message.success('已撤销分享，历史链接即刻失效')
+  } catch (e) {
+    message.error(`撤销分享失败：${(e as Error).message}`)
+  }
+}
+
 // ---------- 生命周期 ----------
 onMounted(async () => {
   const routeId = route.query.id ? Number(route.query.id) : null
@@ -527,6 +537,9 @@ onBeforeUnmount(() => {
           <a-button v-if="tripId" @click="shareTrip">
             分享
           </a-button>
+          <a-popconfirm v-if="tripId" title="撤销后将使已分享的链接全部失效，确定？" @confirm="revokeTripShare">
+            <a-button>撤销分享</a-button>
+          </a-popconfirm>
         </template>
       </div>
     </header>

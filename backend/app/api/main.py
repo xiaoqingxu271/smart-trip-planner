@@ -84,9 +84,10 @@ app = FastAPI(
 _pipeline_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="plan")
 _io_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="io")
 
-# 规划并发闸门：流水线只有 2 个 worker，与其让第 3 个请求无限排队
-# （前端 axios 120s 就超时断开，后端白排队），不如快速失败
-_plan_gate = threading.Semaphore(2)
+# 规划并发闸门 = 1：流水线共享同一个单例 TripPlannerAgent（含同一批 SimpleAgent
+# 的对话历史与同一个 MCP 子进程），串行化是避免跨请求上下串话（批次 F）的最简保证，
+# 也避免 MCP 单子进程并发读写的争用；第 2 个请求快速失败而非无限排队。
+_plan_gate = threading.Semaphore(1)
 
 # 中间件注册顺序 = 后注册者在外层：鉴权（最内，401 也消耗限流配额，
 # 抑制暴力枚举）→ 限流 → CORS（最外，429/401 响应都要补上跨域头，浏览器才能读到）
@@ -155,7 +156,6 @@ async def health():
     demo = settings.demo_mode or not settings.ready_for_agents
     # 探测含网络 I/O（Redis 超时 1.5s、MySQL 建连），放线程池避免阻塞事件循环
     mysql_ok, redis_ok = await asyncio.get_running_loop().run_in_executor(_io_executor, _checks)
-    m = metrics.snapshot()
     return {
         "status": "ok",
         "demo_mode": demo or not settings.ready_for_agents,
@@ -165,8 +165,8 @@ async def health():
         "redis": redis_ok,
         "amap_calls": call_count(),  # 进程内累计高德调用次数（当日用量观测）
         "amap_qps": settings.amap_qps,
-        # 批次 E：LLM 时延与规划失败率（结构化为监控指标，供负载均衡/告警消费）
-        **m,
+        # 批次 F：LLM 时延/规划失败率等细粒度指标不再放入公开 health，
+        # 仅经 /api/metrics（METRICS_TOKEN 保护）暴露，避免公网泄露运行态。
         "message": "" if settings.ready_for_agents or settings.demo_mode
         else "未配置 LLM_API_KEY / AMAP_API_KEY，将自动进入演示模式；请在 backend/.env 中配置。",
     }
@@ -1132,6 +1132,23 @@ async def create_share(http: Request, trip_id: int):
         raise HTTPException(status_code=404, detail="行程不存在或仅本人行程可分享。")
     base = str(http.base_url).rstrip("/")
     return {"share_id": token, "share_url": f"{base}/share/{token}"}
+
+
+@app.delete("/api/trip/history/{trip_id}/share")
+async def revoke_share(http: Request, trip_id: int):
+    """撤销分享（批次 F）：清空令牌，历史分享链接即刻失效。"""
+    user_id = _uid(http)
+
+    def _do():
+        return _get_store_or_503().revoke_share(trip_id, user_id)
+
+    try:
+        ok = await asyncio.get_running_loop().run_in_executor(_io_executor, _do)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，撤销分享暂不可用。")
+    if not ok:
+        raise HTTPException(status_code=404, detail="行程不存在或仅本人行程可撤销分享。")
+    return {"ok": True}
 
 
 @app.get("/api/trip/share/{share_id}")

@@ -29,6 +29,15 @@ def _token_from(request: Request) -> str:
     return auth[7:] if auth.lower().startswith("bearer ") else ""
 
 
+def _fail_count(cache: Cache, username: str) -> int:
+    """某账号当前的连续登录失败计数（Redis 不可用时返回 0，fail-open 由 IP 限流兜底）。"""
+    raw = cache.get(f"auth:fail:{username}")
+    try:
+        return int(raw or 0)
+    except ValueError:
+        return 0
+
+
 @router.post("/register")
 async def register(body: Credentials):
     try:
@@ -41,10 +50,18 @@ async def register(body: Credentials):
 
 @router.post("/login")
 async def login(body: Credentials):
+    cache = _cache()
+    fail_key = f"auth:fail:{body.username}"
+    # 账号级锁定：连续失败达上限即拒绝（与 IP 限流互补，防分布式字典爆破）
+    if _fail_count(cache, body.username) >= settings.login_max_attempts:
+        minutes = max(1, settings.login_lockout_seconds // 60)
+        raise HTTPException(status_code=429, detail=f"登录失败次数过多，请 {minutes} 分钟后再试。")
     user_id = user_service.verify_login(settings, body.username, body.password)
     if user_id is None:
+        cache.incr_window(fail_key, settings.login_lockout_seconds)
         raise HTTPException(status_code=401, detail="用户名或密码不正确")
-    token = user_service.issue_token(_cache(), user_id)
+    cache.delete(fail_key)
+    token = user_service.issue_token(cache, user_id)
     return {"token": token, "user_id": user_id, "username": body.username}
 
 

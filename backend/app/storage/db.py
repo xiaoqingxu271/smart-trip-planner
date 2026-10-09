@@ -38,6 +38,7 @@ _MIGRATIONS: list[tuple[str, tuple[tuple[str, str], ...]]] = [
     ("003", (("user_id", "ALTER TABLE trips ADD COLUMN user_id BIGINT NULL, ADD INDEX idx_user (user_id)"),)),
     ("004", (("share_token", "ALTER TABLE trips ADD COLUMN share_token VARCHAR(32) NULL,"
              " ADD UNIQUE INDEX idx_share (share_token)"),)),
+    ("005", (("share_created_at", "ALTER TABLE trips ADD COLUMN share_created_at DATETIME NULL"),)),
 ]
 
 

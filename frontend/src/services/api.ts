@@ -52,8 +52,10 @@ request.interceptors.response.use(
     const detail = error?.response?.data?.detail
     const message = typeof detail === 'string' ? detail : (detail && JSON.stringify(detail)) || error.message
     console.error(`[API] ✕ ${error?.config?.url}:`, message)
-    // 访问码缺失/会话过期：清凭证回登录页（登录页自身的探测失败不跳转，由页面提示）
-    if (error?.response?.status === 401 && !window.location.pathname.startsWith('/login')) {
+    // 访问码缺失/会话过期：清凭证回登录页（登录页自身的探测失败不跳转，由页面提示；
+    // 分享页/注册页是公开页面，401 不应被强跳登录）
+    const path = window.location.pathname
+    if (error?.response?.status === 401 && !path.startsWith('/login') && !path.startsWith('/share') && !path.startsWith('/register')) {
       localStorage.removeItem(ACCESS_CODE_KEY)
       clearToken()
       window.location.href = '/login'
@@ -67,10 +69,11 @@ request.interceptors.response.use(
 export function imgProxy(url: string | null | undefined): string | null {
   if (!url) return null
   const params = new URLSearchParams({ u: url })
+  // 访问码模式：<img> 无法带自定义头，只能经 ?code= 传访问码（共享演示口令，可接受）。
+  // 会话 token 不再拼进 URL：/api/utils/image 在多用户模式下本就公开，带 token
+  // 只会泄露到日志/Referer，无任何鉴权收益。
   const code = getAccessCode()
   if (code) params.set('code', code)
-  const token = getToken()
-  if (token) params.set('token', token)
   return `/api/utils/image?${params.toString()}`
 }
 
@@ -249,6 +252,10 @@ export async function deleteTrip(id: number): Promise<void> {
 
 export async function createShare(id: number): Promise<{ share_id: string; share_url: string }> {
   return request.post(`/trip/history/${id}/share`)
+}
+
+export async function revokeShare(id: number): Promise<{ ok: boolean }> {
+  return request.delete(`/trip/history/${id}/share`)
 }
 
 export async function getShareDetail(shareId: string): Promise<{ id: number; created_at: string; plan: TripPlan }> {

@@ -39,6 +39,7 @@ _EXACT_RULES: dict[tuple[str, str], str] = {
     ("POST", "/api/trip/plan/async"): "heavy",
     ("POST", "/api/trip/replan"): "heavy",
     ("POST", "/api/utils/geocode"): "geo",
+    ("GET", "/api/utils/poi"): "geo",
     ("GET", "/api/utils/image"): "img",
     # 注册/登录独立收紧桶：抑制对弱口令的暴力枚举
     ("POST", "/api/auth/register"): "auth",

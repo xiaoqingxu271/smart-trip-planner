@@ -133,9 +133,20 @@ class TripPlannerAgent:
             system_prompt=PLANNER_AGENT_PROMPT,
         )
 
+    def _reset_agents(self) -> None:
+        """每次规划/重规划前清空各 Agent 对话历史（批次 F）。
+
+        本类是模块级单例，SimpleAgent.run 会把每轮对话追加进自身 history 且不重置；
+        若不清理，上一请求的私人需求/行程会残留在下一个请求的 LLM 上下文中（串号 +
+        token 成本线性膨胀）。规划闸门已串行化，此处双保险。
+        """
+        for agent in (self.attraction_agent, self.weather_agent, self.hotel_agent, self.planner_agent):
+            agent.clear_history()
+
     # ---------- 对外入口 ----------
 
     def plan(self, request: TripRequest, progress: ProgressCallback | None = None) -> TripPlan:
+        self._reset_agents()
         def notify(stage: str, message: str, extra: dict | None = None) -> None:
             if progress is None:
                 return
@@ -214,6 +225,7 @@ class TripPlannerAgent:
         未受影响的天逐字保留——更快、更稳、不会误伤满意的安排。
         酒店被反馈时影响所有天，自动退化为全量重规划。
         """
+        self._reset_agents()
         target_labels = {"attraction": "景点", "hotel": "酒店", "meal": "餐厅"}
         affected_days = self._affected_days(plan, feedbacks)
         all_days = {d.day for d in plan.daily_plans}

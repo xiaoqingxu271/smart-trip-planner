@@ -2,6 +2,7 @@
 from functools import lru_cache
 import json
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -59,6 +60,10 @@ class Settings(BaseSettings):
     auth_mode: str = "user"
     rate_limit_auth: str = "10/60"  # 注册/登录：10 次 / 分钟 / IP（抑制暴力破解）
 
+    # ---------- 账号级登录锁定（批次 F：与 IP 限流互补，防字典爆破） ----------
+    login_max_attempts: int = 5       # 连续失败多少次后锁定该账号
+    login_lockout_seconds: int = 300  # 锁定时长（秒）
+
     # ---------- 限流（每 IP 固定窗口计数，Redis 不可用时放行；格式 "次数/窗口秒"） ----------
     rate_limit_enabled: bool = True
     rate_limit_heavy: str = "5/300"     # plan/replan 共用：5 次 / 5 分钟
@@ -80,6 +85,25 @@ class Settings(BaseSettings):
     # /api/metrics 的 Prometheus 采集令牌；留空则关闭该端点（返回 404），仅在需要被
     # Prometheus 等采集器抓取时配置，避免把 LLM 用量/规划失败率暴露给普通用户。
     metrics_token: str = ""
+
+    # ---------- 行程分享链接（批次 F） ----------
+    # 分享令牌的有效期（天）；过期后链接失效，需重新分享。
+    share_ttl_days: int = 30
+
+    @model_validator(mode="after")
+    def _validate_ranges(self) -> "Settings":
+        """启动期拒绝明显非法的数值配置（批次 F），避免静默运行在异常状态。"""
+        if self.amap_qps <= 0:
+            raise ValueError(f"AMAP_QPS 必须为正数，当前 {self.amap_qps}")
+        if self.quota_plan_daily < 0:
+            raise ValueError(f"QUOTA_PLAN_DAILY 不能为负，当前 {self.quota_plan_daily}")
+        if self.login_max_attempts < 1:
+            raise ValueError(f"LOGIN_MAX_ATTEMPTS 至少为 1，当前 {self.login_max_attempts}")
+        if self.login_lockout_seconds < 1:
+            raise ValueError(f"LOGIN_LOCKOUT_SECONDS 至少为 1，当前 {self.login_lockout_seconds}")
+        if self.share_ttl_days < 1:
+            raise ValueError(f"SHARE_TTL_DAYS 至少为 1，当前 {self.share_ttl_days}")
+        return self
 
     @property
     def mcp_args_list(self) -> list[str]:
