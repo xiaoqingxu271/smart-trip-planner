@@ -15,6 +15,10 @@ export interface Attraction {
   address: string
   duration: string
   ticket_price: number
+  // 是否需购票（批量 C 起；老数据可能没有）
+  has_ticket?: boolean
+  ticket_from?: string
+  nav_url?: string
   recommended_reason: string
   image_url?: string | null
   // 后端确定性调度器填写的钟点；老数据可能没有
@@ -29,6 +33,7 @@ export interface Meal {
   cuisine: string
   specialty: string
   cost: number
+  cost_note?: string
   image_url?: string | null
   // 后端图片增强时由 POI 搜索富化；老数据可能没有（导航时前端实时解析兜底）
   location?: Location | null
@@ -39,6 +44,8 @@ export interface Hotel {
   location?: Location | null
   address: string
   price_per_night: number
+  price_from?: number | null
+  price_source?: string
   rating: number
   hotel_type: string
   image_url?: string | null
@@ -83,6 +90,7 @@ export interface TripPlan {
   trip_id?: number | null
   warnings?: string[]
   parent_id?: number | null
+  amap_map_url?: string
 }
 
 export interface Feedback {

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import {
   deleteTrip,
+  deleteAccount,
   getHistory,
   getMe,
   getAppStatus,
@@ -213,6 +214,25 @@ async function handleLogout() {
   await logoutUser()
   window.location.href = '/login'
 }
+
+async function handleDeleteAccount() {
+  Modal.confirm({
+    title: '注销账号',
+    content: '将永久删除你的账号与全部行程数据（含分享链接），此操作不可恢复。确定继续吗？',
+    okText: '确认注销',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk: async () => {
+      try {
+        await deleteAccount()
+        message.success('账号已注销')
+        window.location.href = '/login'
+      } catch (e) {
+        message.error(`注销失败：${(e as Error).message}`)
+      }
+    },
+  })
+}
 </script>
 
 <template>
@@ -228,6 +248,7 @@ async function handleLogout() {
           <span class="avatar">{{ username.slice(0, 1).toUpperCase() }}</span>
           <span class="uname">{{ username }}</span>
           <a class="logout" @click="handleLogout">退出</a>
+          <a class="logout danger" @click="handleDeleteAccount">注销</a>
         </div>
       </div>
     </header>
@@ -598,6 +619,10 @@ async function handleLogout() {
 }
 
 .logout:hover {
+  color: var(--coral-500);
+}
+
+.logout.danger {
   color: var(--coral-500);
 }
 

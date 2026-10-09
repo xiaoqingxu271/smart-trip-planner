@@ -31,7 +31,10 @@ class Attraction(BaseModel):
     location: Location = Field(..., description="经纬度坐标")
     address: AddrText = Field("", description="详细地址")
     duration: ShortText = Field("2小时", description="建议游览时长")
-    ticket_price: float = Field(0, ge=0, description="门票价格（元），免费为 0")
+    ticket_price: float = Field(0, ge=0, description="门票价格（元）。无稳定真实源，生成时一律置 0，页面不展示精确票价")
+    has_ticket: bool = Field(False, description="是否需购票（免费/公园为 False）")
+    ticket_from: str = Field("", description="门票价格来源（如官网/平台；空表示未知）")
+    nav_url: str = Field("", description="单点导航唤端链接（高德 URI API）")
     recommended_reason: Annotated[str, StringConstraints(max_length=200)] = Field("", description="推荐理由")
     image_url: Optional[UrlText] = Field(None, description="景点配图（Unsplash）")
     # 钟点由规划后的确定性调度器（schedule_service）填写，Planner 不编造钟点
@@ -47,6 +50,7 @@ class Meal(BaseModel):
     cuisine: ShortText = Field("", description="菜系/类型")
     specialty: Annotated[str, StringConstraints(max_length=100)] = Field("", description="推荐菜品")
     cost: float = Field(0, ge=0, description="人均消费（元）")
+    cost_note: str = Field("", description="餐费口径说明（如「人均（估算）无真实报价」）")
     image_url: Optional[UrlText] = Field(None, description="餐厅配图")
     # 批次 2.1 起：午餐/晚餐坐标由 Planner 从候选餐厅清单产出（导航必需）；早餐可空
     location: Optional[Location] = Field(None, description="经纬度坐标（早餐可为空）")
@@ -58,6 +62,8 @@ class Hotel(BaseModel):
     location: Optional[Location] = Field(None, description="经纬度坐标")
     address: AddrText = Field("", description="详细地址")
     price_per_night: float = Field(..., ge=0, description="每晚价格（元）")
+    price_from: Optional[float] = Field(None, description="真实起价（元），来自价格源的广告/最低价，无源为 None")
+    price_source: str = Field("", description="价格来源标识，如 ctrip_advertised；空表示无真实源")
     rating: float = Field(4.5, ge=0, le=5, description="评分（0-5）")
     hotel_type: ShortText = Field("", description="酒店类型")
     image_url: Optional[UrlText] = Field(None, description="酒店配图")
@@ -159,7 +165,7 @@ class TripPlan(BaseModel):
     )
     # 预算口径说明（批次 1.4）：页面与 PDF 共用，标明门票/住宿/餐饮为估算、交通为路线估价
     budget_note: str = Field(
-        "门票/住宿/餐饮为模型估算，交通为高德打车估价", description="预算说明（估算口径）"
+        "门票以官网为准；住宿、餐饮为估算；交通为高德打车估价", description="预算说明（估算口径）"
     )
     demo: bool = Field(False, description="是否为演示模式数据")
     trip_id: Optional[int] = Field(None, description="入库后的行程 ID（真实模式自动保存）")
@@ -167,6 +173,8 @@ class TripPlan(BaseModel):
         default_factory=list, max_length=20, description="校验器发现的遗留问题（已尽力自动修复）"
     )
     parent_id: Optional[int] = Field(None, description="重规划版本链：指向被反馈的原行程")
+    # 高德唤端（批次 D）：一键打开高德地图查看目的地；「专属地图多 POI 导入 APP」需官方 MCP，见 docs
+    amap_map_url: str = Field("", description="一键打开高德地图（目的地）链接")
 
 
 class Feedback(BaseModel):

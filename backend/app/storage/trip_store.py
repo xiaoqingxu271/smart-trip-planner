@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 from typing import Any
 
 from ..config import Settings
@@ -155,6 +156,39 @@ class TripStore:
         self.cache.zrem(self._stars_key(user_id), str(trip_id))
         self.cache.delete(f"trip:detail:{trip_id}")
         return True
+
+    def get_or_create_share_token(self, trip_id: int, user_id: int | None = None) -> str | None:
+        """生成/复用只读分享令牌（仅限本人行程；示例/无主行程不生成）。"""
+        if user_id is not None and not self._is_owned_by(trip_id, user_id):
+            return None
+        with connection(self.settings) as conn, conn.cursor() as cur:
+            cur.execute("SELECT share_token FROM trips WHERE id = %s", (trip_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            token = row.get("share_token")
+            if token:
+                return token
+            token = secrets.token_hex(12)
+            cur.execute("UPDATE trips SET share_token = %s WHERE id = %s", (token, trip_id))
+            return token
+
+    def get_share_detail(self, token: str) -> dict[str, Any] | None:
+        """按分享令牌只读取行程（独立于登录态，不做用户可见性过滤）。"""
+        with connection(self.settings) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, request_json, plan_json, created_at FROM trips WHERE share_token = %s",
+                (token,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "created_at": row["created_at"].isoformat(timespec="minutes"),
+            "request": json.loads(row["request_json"]),
+            "plan": json.loads(row["plan_json"]),
+        }
 
     def _is_owned_by(self, trip_id: int, user_id: int) -> bool:
         with connection(self.settings) as conn, conn.cursor() as cur:

@@ -30,7 +30,6 @@ from ..storage.cache import Cache
 from .amap_pacer import pace
 from .unsplash_service import UnsplashService
 
-_REQUEST_INTERVAL = 0.4  # 高德 QPS 限流保护（个人 Key 搜索类约 3 QPS）
 _POI_CACHE_TTL = 7 * 24 * 3600  # POI 图片地址缓存 7 天
 
 
@@ -158,7 +157,7 @@ class ImageService:
         """place/text 搜索：优先名称匹配且有图的 POI，其次有图的 POI，再次名称匹配的 POI。"""
         body = None
         for attempt in range(3):
-            pace(_REQUEST_INTERVAL)  # 调用前过全局节拍，最后一次调用后不再空等
+            pace()  # 调用前过全局节拍（间隔由 Settings.amap_qps 派生），最后一次调用后不再空等
             try:
                 resp = httpx.get(
                     self.AMAP_PLACE_TEXT,

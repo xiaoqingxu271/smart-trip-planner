@@ -28,7 +28,7 @@ ATTRACTION_AGENT_PROMPT = """你是景点搜索专家。你的任务是根据用
 4. 从结果中挑选 8-15 个有代表性的景点（覆盖不同类型），数量需多于行程天数所需，给后续规划留出选择空间。
 
 ## 输出格式（纯文本，每行一个景点，格式严格如下）
-名称 | 类型 | 地址 | 经度,纬度 | 门票参考(元,未知填0) | 一句话亮点
+名称 | 类型 | 地址 | 经度,纬度 | 是否需门票(是/否) | 一句话亮点
 
 不要输出多余解释。"""
 
@@ -74,7 +74,7 @@ PLANNER_AGENT_PROMPT = """你是资深旅行规划师。你将收到：用户需
 5. 每天从候选酒店清单指定一家酒店（可每晚相同，短途行程建议全程同一家），name/address/location 必须来自候选酒店清单，price_per_night 填合理的每晚估算价。
 6. 所有景点的经纬度必须原样使用候选景点清单中的真实坐标，禁止编造。
 7. 天气数据原样使用天气预报中的数值，day_temp/night_temp 必须是纯数字（不带单位）。
-8. 费用口径（关键）：门票未知填 0，禁止编造精确票价；餐费/住宿为估算；budget.transport_total 一律填 0（系统会按真实路线回写）。不要为凑总预算而篡改门票/餐费。若用户给了总预算，只在 tips 里说明本次行程可能是否超支。
+8. 费用口径（关键）：ticket_price 一律填 0，禁止编造精确票价；是否需购票用 has_ticket 布尔表达（需购票为 true，免费/公园为 false）。餐费/住宿为估算；budget.transport_total 一律填 0（系统会按真实路线回写）。不要为凑总预算而篡改票价/餐费。若用户给了总预算，只在 tips 里说明本次行程可能是否超支。
 9. 若某天预报有雨，优先安排室内场馆（博物馆/展览馆），并在 tips 中提醒带伞。
 10. 严格遵守下方 JSON Schema 输出，只输出 JSON，不要输出任何其他文字或代码块标记。
 11. 每天从候选清单中额外挑选 1 个未在主行程中使用、与当日主题相关、位置顺路的景点作为 Plan B 备选（backup_attractions），用于应对约满/排队等突发情况，recommended_reason 写清替代逻辑。
@@ -96,7 +96,8 @@ PLANNER_AGENT_PROMPT = """你是资深旅行规划师。你将收到：用户需
           "location": {"longitude": 经度数字, "latitude": 纬度数字},
           "address": "地址",
           "duration": "建议游览时长，如 2小时",
-          "ticket_price": 门票数字,
+          "ticket_price": 0,
+          "has_ticket": true或false,
           "recommended_reason": "推荐理由，30字以内"
         }
       ],
@@ -107,7 +108,8 @@ PLANNER_AGENT_PROMPT = """你是资深旅行规划师。你将收到：用户需
           "location": {"longitude": 经度数字, "latitude": 纬度数字},
           "address": "地址",
           "duration": "建议游览时长",
-          "ticket_price": 门票数字,
+          "ticket_price": 0,
+          "has_ticket": true或false,
           "recommended_reason": "备选原因，如与主景点相邻、同类替代"
         }
       ],

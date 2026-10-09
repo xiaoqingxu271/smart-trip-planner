@@ -209,6 +209,8 @@ scp "D:\Code\Practical Project\smart-trip-planner\backend\.env" root@139.196.40.
 >
 > 说明：`backend/.env` 里的 `MYSQL_HOST / MYSQL_PASSWORD / REDIS_URL` 写什么都没关系，`docker-compose.yml` 已强制用容器服务名和统一密码覆盖它们。
 
+> ⚠️ **商用部署必须使用企业认证高德 Key**：个人认证 Key 搜索类月配额仅 5000 次 / QPS 3，按单次规划约 40 次搜索粗算，只能支撑约 100 次规划/月，且高德官方规定商用需企业认证主体。请在 `AMAP_API_KEY` 填入企业认证（乘风计划）Key，并按认证等级把 `AMAP_QPS` 设为 30（企业）或 100（技术服务许可），否则节拍器按个人 3 QPS 限速。
+
 ### 6.3 访问鉴权（默认已开启，无需配置）
 
 后端默认 `AUTH_MODE=user`：打开站点即出注册/登录页，行程按用户隔离，
@@ -291,11 +293,13 @@ docker compose logs -f backend   # 看后端日志，Ctrl+C 退出查看（不�
 curl http://127.0.0.1/api/health
 ```
 
-正常返回（2026-10-09 实测样例）：
+正常返回（含高德用量观测字段）：
 
 ```json
-{"status":"ok","demo_mode":false,"auth_required":false,"auth_mode":"none","mysql":true,"redis":true,"message":""}
+{"status":"ok","demo_mode":false,"auth_required":false,"auth_mode":"none","mysql":true,"redis":true,"amap_calls":0,"amap_qps":3.0,"message":""}
 ```
+
+其中 `amap_calls` 为进程内累计（重启清零）的高德调用次数，`amap_qps` 为当前节流 QPS；用于盯配额是否逼近上限。跨进程/跨天累计建议接入监控平台（Prometheus `amap_calls_total`），本轮先暴露此单一进程内指标。
 
 然后在**本地浏览器**访问：
 

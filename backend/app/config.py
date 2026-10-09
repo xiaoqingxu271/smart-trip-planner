@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # ---------- Unsplash ----------
     unsplash_access_key: str = ""
 
+    # ---------- 价格源（批次 C，可选） ----------
+    # StayAPI 为第三方聚合（携程酒店广告最低价），仅作「起价参考」；
+    # 留空则酒店不显示真实起价、降级为「起价未知」。失败/超时不影响主流程。
+    stayapi_key: str = ""
+    stayapi_base_url: str = "https://api.stayapi.com"
+
     # ---------- MySQL（行程持久化，唯一事实来源） ----------
     mysql_host: str = "localhost"
     mysql_port: int = 3306
@@ -59,6 +65,16 @@ class Settings(BaseSettings):
     rate_limit_geo: str = "30/60"       # 地理编码：30 次 / 分钟
     rate_limit_img: str = "120/60"      # 图片代理：120 次 / 分钟
     rate_limit_default: str = "120/60"  # 其余 /api/* 兜底
+
+    # ---------- 用户级规划配额（成本护栏，批次 A2） ----------
+    # 每个登录用户每天可触发的规划次数（含 re-plan），超限 429；
+    # 未登录走 IP 限流兜底；0 表示关闭。多用户模式下的成本上限 = 注册用户数 × 此值。
+    quota_plan_daily: int = 3
+
+    # ---------- 高德调用节流（批次 B） ----------
+    # 认证等级对应的搜索/LBS QPS：个人认证 3、企业认证 30、技术服务许可 100。
+    # pacer 按 1/qps 作为最小调用间隔；image/route 等所有高德调用统一走此处。
+    amap_qps: float = 3.0
 
     @property
     def mcp_args_list(self) -> list[str]:

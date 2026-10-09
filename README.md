@@ -144,6 +144,13 @@ cd frontend && npm test
 
 **作品集/历史**：首页下方"精选行程"区含 示例作品（内置种子数据）／我的收藏／最近规划 三个页签，卡片点击进入 `/result?id=` 由服务端按 ID 加载；结果页可一键收藏。
 
+## 🔒 隐私与数据留存
+
+- **本服务收集**：用户名、密码哈希（PBKDF2，原密码不落地）、行程计划数据（目的地、偏好、生成的行程 JSON）。这些数据仅用于行程生成与历史回看，不对外共享、不出售。
+- **数据存储位置**：账号存于 MySQL `users` 表，行程存于 `trips` 表；Redis 仅存临时会话 Token（TTL 7 天）与缓存，清空即失。
+- **注销删除**：登录后个人中心「注销」按钮（或 `DELETE /api/auth/account`）会**永久删除**该账号的全部行程与用户记录，并撤销会话；随行程派生的只读分享链接一并失效。删除不可恢复。
+- **分享链接**：行程可生成只读分享链接（`/share/{id}`），仅展示行程内容、不含账号信息；删除行程或注销账号即失效。
+
 ## 🔍 关键实现说明
 
 - **MCPTool**（`backend/app/agents/mcp_tool.py`）：hello-agents 1.0.0 未内置 MCPTool，本项目按书中 `auto_expand` 语义自行实现——以子进程启动官方 `@amap/amap-maps-mcp-server`，通过 stdin/stdout 收发 JSON-RPC（initialize → tools/list → tools/call），并把 MCP 工具自动展开为框架原生 Tool（走 function calling）。三个搜索型 Agent 各持有一个**带工具白名单**的 MCPTool 视图（最小权限：景点 3 个工具、天气 1 个、酒店 1 个），共享同一个 MCP 服务器子进程；白名单在展开过滤与父工具入口两处强制。

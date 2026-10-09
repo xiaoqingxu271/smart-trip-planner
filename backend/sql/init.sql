@@ -33,10 +33,12 @@ CREATE TABLE IF NOT EXISTS trips (
   is_seed      TINYINT(1)   NOT NULL DEFAULT 0,    -- 是否为内置示例作品
   user_id      BIGINT       NULL,                  -- 所属用户（NULL=无主，全员可读；见 README 可见性规则）
   parent_id    BIGINT       NULL,                  -- 重规划版本链：指向被反馈的原行程
+  share_token  VARCHAR(32)  NULL,                  -- 只读分享链接的随机句柄（独立于登录态）
   created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_created (created_at),
   INDEX idx_starred (starred, created_at),
   INDEX idx_seed (is_seed, created_at),
   INDEX idx_user (user_id),
-  INDEX idx_parent (parent_id)
+  INDEX idx_parent (parent_id),
+  UNIQUE INDEX idx_share (share_token)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;

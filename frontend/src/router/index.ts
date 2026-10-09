@@ -19,13 +19,19 @@ const router = createRouter({
       name: 'login',
       component: () => import('@/views/Login.vue'),
     },
+    {
+      path: '/share/:id',
+      name: 'share',
+      component: () => import('@/views/Share.vue'),
+    },
   ],
 })
 
 // 登录守卫：按后端鉴权形态选择凭证——user 模式要 Token，password 模式要访问码。
 // health 免鉴权可安全探测；后端不可达时放行，由页面自身的请求报错。
+// 分享页（/share/:id）独立于登录态，直接放行。
 router.beforeEach(async (to) => {
-  if (to.name === 'login') return true
+  if (to.name === 'login' || to.name === 'share') return true
   try {
     const status = await getAppStatus()
     if (status.auth_mode === 'user') {

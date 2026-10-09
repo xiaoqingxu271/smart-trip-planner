@@ -27,6 +27,43 @@ AVAILABLE: bool | None = None  # None=未探测
 _DOWN_UNTIL = 0.0
 _DOWN_COOLDOWN = 10.0
 
+# 编号化迁移（批次 E）：每条约一个「列名探测键 + ALTER 语句」。
+# 应用一次后记录到 schema_migrations；列级探测仍保留——MySQL 8 无
+# ADD COLUMN IF NOT EXISTS，且老部署可能已由旧版 ALTER 加过列而未登记迁移，
+# 需要能自愈把缺失列补上、把已存在列跳过。
+_MIGRATIONS: list[tuple[str, tuple[tuple[str, str], ...]]] = [
+    ("001", (("parent_id", "ALTER TABLE trips ADD COLUMN parent_id BIGINT NULL, ADD INDEX idx_parent (parent_id)"),)),
+    ("002", (("cover_url", "ALTER TABLE trips ADD COLUMN cover_url VARCHAR(500) NULL,"
+             " ADD COLUMN themes VARCHAR(200) NULL, ADD COLUMN summary VARCHAR(200) NULL"),)),
+    ("003", (("user_id", "ALTER TABLE trips ADD COLUMN user_id BIGINT NULL, ADD INDEX idx_user (user_id)"),)),
+    ("004", (("share_token", "ALTER TABLE trips ADD COLUMN share_token VARCHAR(32) NULL,"
+             " ADD UNIQUE INDEX idx_share (share_token)"),)),
+]
+
+
+def _apply_migrations(cur, settings: Settings) -> None:
+    """按版本号递增应用未登记的列迁移，并记录到 schema_migrations。"""
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations ("
+        " version VARCHAR(16) PRIMARY KEY,"
+        " applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    )
+    cur.execute("SELECT version FROM schema_migrations")
+    applied = {row[0] for row in cur.fetchall()}
+    for version, cols in _MIGRATIONS:
+        if version in applied:
+            continue
+        for col, alter_sql in cols:
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.columns"
+                " WHERE table_schema = %s AND table_name = 'trips' AND column_name = %s",
+                (settings.mysql_database, col),
+            )
+            if cur.fetchone()[0] == 0:
+                cur.execute(alter_sql)
+        cur.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (version,))
+
 
 def _connect(settings: Settings) -> pymysql.connections.Connection:
     return pymysql.connect(
@@ -67,34 +104,8 @@ def ensure_database(settings: Settings) -> None:
             for stmt in (s.strip() for s in sql.split(";")):
                 if stmt:
                     cur.execute(stmt)
-            # 轻量迁移：已有表补缺失列（CREATE TABLE IF NOT EXISTS 不会更新存量表）
-            cur.execute(
-                "SELECT COUNT(*) FROM information_schema.columns"
-                " WHERE table_schema = %s AND table_name = 'trips' AND column_name = 'parent_id'",
-                (settings.mysql_database,),
-            )
-            if cur.fetchone()[0] == 0:
-                cur.execute("ALTER TABLE trips ADD COLUMN parent_id BIGINT NULL, ADD INDEX idx_parent (parent_id)")
-            # 列表页摘要列：避免为封面/主题/总览拉全量 plan_json
-            cur.execute(
-                "SELECT COUNT(*) FROM information_schema.columns"
-                " WHERE table_schema = %s AND table_name = 'trips' AND column_name = 'cover_url'",
-                (settings.mysql_database,),
-            )
-            if cur.fetchone()[0] == 0:
-                cur.execute(
-                    "ALTER TABLE trips ADD COLUMN cover_url VARCHAR(500) NULL,"
-                    " ADD COLUMN themes VARCHAR(200) NULL,"
-                    " ADD COLUMN summary VARCHAR(200) NULL"
-                )
-            # 多用户：行程归属列（AUTH_MODE=user 时按用户隔离）
-            cur.execute(
-                "SELECT COUNT(*) FROM information_schema.columns"
-                " WHERE table_schema = %s AND table_name = 'trips' AND column_name = 'user_id'",
-                (settings.mysql_database,),
-            )
-            if cur.fetchone()[0] == 0:
-                cur.execute("ALTER TABLE trips ADD COLUMN user_id BIGINT NULL, ADD INDEX idx_user (user_id)")
+            # 编号化列迁移：已有表补缺失列（CREATE TABLE IF NOT EXISTS 不更新存量表）
+            _apply_migrations(cur, settings)
         conn.commit()
     finally:
         conn.close()

@@ -31,7 +31,7 @@ class AccessCodeMiddleware(BaseHTTPMiddleware):
         if not self._password:
             return await call_next(request)
         path = request.url.path
-        if path == "/api/health" or not path.startswith("/api/"):
+        if path == "/api/health" or path.startswith("/api/trip/share/") or not path.startswith("/api/"):
             return await call_next(request)
         given = request.headers.get("x-access-code") or request.query_params.get("code") or ""
         if secrets.compare_digest(given.encode(), self._password.encode()):
@@ -71,7 +71,7 @@ class UserAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path = request.url.path
-        if path in self.PUBLIC_PATHS or not path.startswith("/api/"):
+        if path in self.PUBLIC_PATHS or path.startswith("/api/trip/share/") or not path.startswith("/api/"):
             request.state.user_id = None
             return await call_next(request)
 

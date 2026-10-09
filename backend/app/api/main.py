@@ -32,7 +32,7 @@ from pydantic import BaseModel
 
 from ..agents.mcp_tool import MCPError
 from ..agents.trip_planner import PlannerError, get_planner
-from ..agents.validator import _get_poi_info
+from ..agents.validator import _get_poi_info, validate_plan
 from ..config import get_settings
 from ..models.schemas import (
     Budget,
@@ -42,10 +42,14 @@ from ..models.schemas import (
     TripRequest,
     TripSummary,
 )
+from ..services.amap_pacer import call_count
+from ..services.amap_launch import apply_launch_links
+from ..services import metrics
 from ..services.demo_data import build_demo_plan
 from ..services.cleanup import cleanup_stale_files
 from ..services.ical_service import plan_to_ics
 from ..services.image_service import ImageService
+from ..services.price_service import enrich_hotel_prices
 from ..services.route_service import compute_day_routes
 from ..services.schedule_service import schedule_plan
 from ..storage.cache import Cache
@@ -151,6 +155,7 @@ async def health():
     demo = settings.demo_mode or not settings.ready_for_agents
     # 探测含网络 I/O（Redis 超时 1.5s、MySQL 建连），放线程池避免阻塞事件循环
     mysql_ok, redis_ok = await asyncio.get_running_loop().run_in_executor(_io_executor, _checks)
+    m = metrics.snapshot()
     return {
         "status": "ok",
         "demo_mode": demo or not settings.ready_for_agents,
@@ -158,9 +163,19 @@ async def health():
         "auth_mode": settings.auth_mode,
         "mysql": mysql_ok,
         "redis": redis_ok,
+        "amap_calls": call_count(),  # 进程内累计高德调用次数（当日用量观测）
+        "amap_qps": settings.amap_qps,
+        # 批次 E：LLM 时延与规划失败率（结构化为监控指标，供负载均衡/告警消费）
+        **m,
         "message": "" if settings.ready_for_agents or settings.demo_mode
         else "未配置 LLM_API_KEY / AMAP_API_KEY，将自动进入演示模式；请在 backend/.env 中配置。",
     }
+
+
+@app.get("/api/metrics")
+async def metrics_endpoint():
+    """Prometheus 风格指标（可选采集端点，进程内计数）。"""
+    return Response(content=metrics.prometheus_text(), media_type="text/plain; version=0.0.4")
 
 
 class AppConfig(BaseModel):
@@ -433,6 +448,17 @@ def _finalize_plan(request: TripRequest, plan: TripPlan) -> None:
 
     if plan.budget is None:
         plan.budget = Budget()
+
+    # 门票口径归一化（批次 C）：无真实来源的精确票价是 LLM 编数，一律清零，
+    # 改用 has_ticket 表达「是否需购票」；attraction_total 只累计有真实来源（ticket_from）的票价。
+    for d in plan.daily_plans:
+        for a in d.attractions:
+            if a.ticket_from:
+                continue
+            if a.ticket_price > 0:
+                a.has_ticket = True
+                a.ticket_price = 0
+
     plan.budget.attraction_total = round(
         sum(a.ticket_price for d in plan.daily_plans for a in d.attractions), 2
     )
@@ -447,13 +473,13 @@ def _finalize_plan(request: TripRequest, plan: TripPlan) -> None:
     # 市内交通费按方式回写
     if request.transit_mode in ("taxi", "drive"):
         plan.budget.transport_total = taxi_sum
-        plan.budget_note = "门票/住宿/餐饮为模型估算，交通为高德打车估价"
+        plan.budget_note = "门票以官网为准；住宿、餐饮为估算；交通为高德打车估价"
     elif request.transit_mode == "walk":
         plan.budget.transport_total = 0
-        plan.budget_note = "门票/住宿/餐饮为模型估算，交通按步行计（未计打车）"
+        plan.budget_note = "门票以官网为准；住宿、餐饮为估算；交通按步行计（未计打车）"
     else:  # transit
         plan.budget.transport_total = 0
-        plan.budget_note = "门票/住宿/餐饮为模型估算，交通为公交/地铁（费用未计入）"
+        plan.budget_note = "门票以官网为准；住宿、餐饮为估算；交通为公交/地铁（费用未计入）"
 
     items_sum = (
         plan.budget.attraction_total + plan.budget.hotel_total
@@ -478,6 +504,50 @@ def _finalize_plan(request: TripRequest, plan: TripPlan) -> None:
     for w in sched_warnings:
         if w not in plan.warnings:
             plan.warnings.append(w)
+
+
+def _repair_after_edit(request: TripRequest, plan: TripPlan) -> None:
+    """编辑/换备选后的确定性修复（批次 A1）：把被编辑绕开的守门补回来。
+
+    与规划时不同，编辑是用户的有意变更，这里**不回退/不自动改写**用户增删的
+    景点/餐饮/酒店，只做两件事——
+    1. 重算真实路线 → 市内交通费、门票/住宿合计、grand_total、钟点（复用 _finalize_plan）；
+    2. 跑确定性校验，把强问题（过密/闭馆/坐标编造/越界/必去不去等）写入 warnings 供页面提示。
+    """
+    # 1. 确定性重算（路线/交通费/门票/住宿/钟点/预算口径），失败保留原值
+    try:
+        _finalize_plan(request, plan)
+    except Exception:  # noqa: BLE001
+        logger.warning("编辑后确定性重算失败（保留原值）", exc_info=True)
+
+    # 2. 确定性校验 → 强问题写 warnings（只告警，不回退用户编辑）
+    try:
+        planner = get_planner(settings)
+        issues = validate_plan(plan, request, planner.mcp_tool.client, planner._cache)
+    except Exception:  # noqa: BLE001
+        logger.warning("编辑后校验失败（跳过）", exc_info=True)
+        return
+    for text in (i["text"] for i in issues if i.get("strong", True)):
+        if text not in plan.warnings:
+            plan.warnings.append(text)
+
+
+def _quota_allowed(user_id: int | None) -> tuple[bool, str | None]:
+    """用户级规划配额判断（同步，供 executor 调用；批次 A2）。
+
+    未登录 / 配额关闭 / Redis 不可用 → 一律放行（IP 限流兜底）。
+    计数在入口递增（含失败尝试），粗粒度反滥用足够；精确计费后续接付费档。
+    """
+    if user_id is None or _cache is None or settings.quota_plan_daily <= 0:
+        return True, None
+    day = date.today().isoformat()
+    r = _cache.incr_window(f"plan:quota:{user_id}:{day}", 86400)
+    if r is None:
+        return True, None
+    used, _ = r
+    if used > settings.quota_plan_daily:
+        return False, f"今日规划次数已达上限（{settings.quota_plan_daily} 次/天），请明天再试。"
+    return True, None
 
 
 def _plan_execute(request: TripRequest, progress=None, user_id: int | None = None) -> TripPlan:
@@ -522,6 +592,18 @@ def _plan_execute(request: TripRequest, progress=None, user_id: int | None = Non
     except Exception:  # noqa: BLE001
         logger.warning("确定性后处理失败（保留估算口径）", exc_info=True)
 
+    # 价格区间化（批次 C）：可选真实酒店起价回填，失败/未配置静默降级
+    try:
+        enrich_hotel_prices(plan, settings)
+    except Exception:  # noqa: BLE001
+        logger.warning("价格区间化失败（跳过）", exc_info=True)
+
+    # 高德唤端（批次 D）：导航/看地图链接回填（确定性，零高德开销）
+    try:
+        apply_launch_links(plan, settings)
+    except Exception:  # noqa: BLE001
+        logger.warning("唤端链接生成失败（跳过）", exc_info=True)
+
     # 自动入库（失败不影响返回，历史功能降级）
     if store:
         try:
@@ -555,15 +637,19 @@ def _plan_full(request: TripRequest, progress=None, user_id: int | None = None) 
             allowed, lock_token = _cache.acquire_lock(lock_key, 300)
             if not allowed:
                 raise PlanJobError(409, "相同的规划请求正在处理中，请稍候再试。")
-        return _plan_execute(request, progress, user_id)
+        plan = _plan_execute(request, progress, user_id)
+        metrics.record_plan(True)
+        return plan
     except PlanJobError:
         raise
     except PlannerError as e:
         # PlannerError 是面向用户的可读消息（前端一直按此展示）；异常链进服务端日志
+        metrics.record_plan(False)
         logger.warning("规划流水线失败: %s", e, exc_info=e.__cause__)
         raise PlanJobError(500, str(e)) from e
     except Exception:  # noqa: BLE001
         # 未预期异常不外泄内部细节，详情看服务端日志
+        metrics.record_plan(False)
         logger.exception("行程规划未预期失败")
         raise PlanJobError(500, "行程规划失败，请稍后重试（详情见服务端日志）") from None
     finally:
@@ -581,6 +667,11 @@ async def create_trip_plan(request: TripRequest, http: Request):
     - 相同请求正在规划中时 409；系统繁忙时 429。
     """
     loop = asyncio.get_running_loop()
+    demo = settings.demo_mode or not settings.ready_for_agents
+    if not demo:
+        allowed, msg = await loop.run_in_executor(_io_executor, _quota_allowed, _uid(http))
+        if not allowed:
+            raise HTTPException(status_code=429, detail=msg)
     try:
         return await loop.run_in_executor(_pipeline_executor, _plan_full, request, _uid(http))
     except PlanJobError as e:
@@ -620,6 +711,9 @@ async def submit_plan_job(request: TripRequest, http: Request):
     # 闸门与规划锁在提交时同步获取：冲突立即反馈；由后台任务持有至执行结束
     lock_token: str | None = None
     if not demo:
+        allowed, quota_msg = await loop.run_in_executor(_io_executor, _quota_allowed, _uid(http))
+        if not allowed:
+            raise HTTPException(status_code=429, detail=quota_msg)
         if not _plan_gate.acquire(blocking=False):
             raise HTTPException(status_code=429, detail="系统正在规划其他行程，请稍后再试。")
         if store and _cache:
@@ -739,6 +833,11 @@ async def replan_trip(body: ReplanBody, http: Request):
     user_id = _uid(http)
     loop = asyncio.get_running_loop()
 
+    # 重规划同样触发完整流水线，纳入用户日配额
+    allowed, quota_msg = await loop.run_in_executor(_io_executor, _quota_allowed, user_id)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=quota_msg)
+
     def _load_original():
         return _get_store_or_503().get_detail(body.trip_id, user_id)
 
@@ -827,6 +926,7 @@ async def swap_backup(http: Request, trip_id: int, body: SwapBody):
         raise HTTPException(status_code=404, detail="行程不存在或已删除。")
 
     plan = TripPlan(**detail["plan"])
+    request = TripRequest(**detail["request"])
     day = next((d for d in plan.daily_plans if d.day == body.day), None)
     if day is None:
         raise HTTPException(status_code=404, detail=f"行程中没有第 {body.day} 天。")
@@ -839,6 +939,8 @@ async def swap_backup(http: Request, trip_id: int, body: SwapBody):
     day.attractions[ai], day.backup_attractions[bi] = day.backup_attractions[bi], day.attractions[ai]
 
     def _save():
+        # 换完景点后同样重跑校验与重算（路线/钟点/交通费），修不掉写入 warnings
+        _repair_after_edit(request, plan)
         return _get_store_or_503().update_plan(trip_id, plan, user_id)
 
     try:
@@ -917,14 +1019,29 @@ async def export_trip_ical(http: Request, trip_id: int):
 
 @app.put("/api/trip/history/{trip_id}", response_model=TripPlan)
 async def update_history(http: Request, trip_id: int, plan: TripPlan):
-    """编辑保存：把结果页编辑后的行程写回数据库。"""
+    """编辑保存：写回前重跑确定性校验与重算（路线/钟点/交通费/预算），修不掉写入 warnings。"""
     user_id = _uid(http)
 
-    def _save():
+    def _load_req():
+        return _get_store_or_503().get_detail(trip_id, user_id)
+
+    try:
+        detail = await asyncio.get_running_loop().run_in_executor(_io_executor, _load_req)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，保存功能暂不可用。")
+    if detail is None:
+        raise HTTPException(status_code=404, detail="行程不存在或已删除。")
+    try:
+        request = TripRequest(**detail["request"])
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="原行程参数无法解析，无法保存。")
+
+    def _repair_and_save():
+        _repair_after_edit(request, plan)
         return _get_store_or_503().update_plan(trip_id, plan, user_id)
 
     try:
-        updated = await asyncio.get_running_loop().run_in_executor(_io_executor, _save)
+        updated = await asyncio.get_running_loop().run_in_executor(_io_executor, _repair_and_save)
     except StorageUnavailable:
         raise HTTPException(status_code=503, detail="MySQL 不可用，保存功能暂不可用。")
     if updated is None:
@@ -962,6 +1079,39 @@ async def delete_history(http: Request, trip_id: int):
     if not ok:
         raise HTTPException(status_code=404, detail="行程不存在或不可删除（示例行程不可删）。")
     return {"id": trip_id, "deleted": True}
+
+
+@app.post("/api/trip/history/{trip_id}/share")
+async def create_share(http: Request, trip_id: int):
+    """生成/复用只读分享链接（仅限本人行程；分享不含编辑权限）。"""
+    user_id = _uid(http)
+
+    def _save():
+        return _get_store_or_503().get_or_create_share_token(trip_id, user_id)
+
+    try:
+        token = await asyncio.get_running_loop().run_in_executor(_io_executor, _save)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，分享功能暂不可用。")
+    if not token:
+        raise HTTPException(status_code=404, detail="行程不存在或仅本人行程可分享。")
+    base = str(http.base_url).rstrip("/")
+    return {"share_id": token, "share_url": f"{base}/share/{token}"}
+
+
+@app.get("/api/trip/share/{share_id}")
+async def get_share_detail(share_id: str):
+    """只读分享详情（独立于登录态）：公开路径，仅返回分享令牌对应的行程。"""
+    def _load():
+        return _get_store_or_503().get_share_detail(share_id)
+
+    try:
+        detail = await asyncio.get_running_loop().run_in_executor(_io_executor, _load)
+    except StorageUnavailable:
+        raise HTTPException(status_code=503, detail="MySQL 不可用，分享内容暂不可用。")
+    if detail is None:
+        raise HTTPException(status_code=404, detail="分享链接无效或已失效。")
+    return detail
 
 
 def _resolve_dates(request: TripRequest) -> list[str]:

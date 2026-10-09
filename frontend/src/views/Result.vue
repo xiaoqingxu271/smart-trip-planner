@@ -4,7 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import AMapLoader from '@amap/amap-jsapi-loader'
 import { exportElementAsPdf, exportElementAsPng } from '@/utils/exporter'
-import { getTripRoutes, getAppConfig, geocode, getTripDetail, imgProxy, replanTrip, starTrip, swapBackup, tripIcalUrl, updateTrip } from '@/services/api'
+import { openExternal } from '@/utils/amapNav'
+import { getTripRoutes, getAppConfig, geocode, getTripDetail, imgProxy, replanTrip, createShare, starTrip, swapBackup, tripIcalUrl, updateTrip } from '@/services/api'
 import type { AppConfig, Attraction, DayRoute, Feedback, TripPlan } from '@/types'
 import AppIcon from '@/components/AppIcon.vue'
 import AmapNavButton from '@/components/AmapNavButton.vue'
@@ -157,6 +158,16 @@ async function initMap() {
   }
 }
 
+/** 转义 LLM 产出的地名，防止拼进 innerHTML 时注入标签/脚本（批次 A3）。 */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 function renderMarkers() {
   if (!mapInstance || !AMapNS) return
   mapInstance.clearMap()
@@ -167,11 +178,11 @@ function renderMarkers() {
         display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;
         border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.3);">${i + 1}</div>`,
       offset: new AMapNS.Pixel(-13, -13),
-      title: attr.name,
+      title: escapeHtml(attr.name),
     })
     marker.setLabel({
       content: `<span style="font-size:12px;color:#1c2b24;background:#fff;padding:1px 6px;
-        border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,.15);white-space:nowrap;">${attr.name}</span>`,
+        border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,.15);white-space:nowrap;">${escapeHtml(attr.name)}</span>`,
       direction: 'top',
       offset: new AMapNS.Pixel(0, -8),
     })
@@ -245,10 +256,13 @@ async function saveEdit() {
   tripPlan.value = working.value
   sessionStorage.setItem('tripPlan', JSON.stringify(tripPlan.value))
   editing.value = false
-  // 有服务端 ID 时同步回数据库；失败只影响云端副本，本地仍生效
+  // 有服务端 ID 时同步回数据库；服务端会重跑校验与重算（路线/钟点/交通费），
+  // 返回的修复后计划覆盖本地，保证时间/预算与实际一致
   if (tripId.value) {
     try {
-      await updateTrip(tripId.value, tripPlan.value)
+      const repaired = await updateTrip(tripId.value, tripPlan.value)
+      tripPlan.value = repaired
+      sessionStorage.setItem('tripPlan', JSON.stringify(repaired))
       message.success('行程已保存并同步到服务器')
     } catch (e) {
       message.warning(`本地已保存，但同步服务器失败：${(e as Error).message}`)
@@ -382,6 +396,11 @@ function money(n?: number | null): string {
   return `¥${(n ?? 0).toLocaleString('zh-CN')}`
 }
 
+/** 是否需购票：新数据看 has_ticket，老数据（无该字段、ticket_price>0）回退推断。 */
+function needTicket(attr: Attraction): boolean {
+  return attr.has_ticket === true || (attr.has_ticket === undefined && attr.ticket_price > 0)
+}
+
 /**
  * POI 图片统一走后端同源代理：绕开高德 CDN 的防盗链/混合内容/偶发加载失败，
  * 同时让 html2canvas 导出不再有跨域污染问题。
@@ -399,6 +418,17 @@ async function toggleStar() {
     message.success(next ? '已收藏到首页「我的收藏」' : '已取消收藏')
   } catch (e) {
     message.error(`操作失败：${(e as Error).message}`)
+  }
+}
+
+async function shareTrip() {
+  if (!tripId.value) return
+  try {
+    const { share_url } = await createShare(tripId.value)
+    await navigator.clipboard.writeText(share_url)
+    message.success('分享链接已复制到剪贴板')
+  } catch (e) {
+    message.error(`分享失败：${(e as Error).message}`)
   }
 }
 
@@ -488,6 +518,13 @@ onBeforeUnmount(() => {
           <a-button @click="exportIcal">
             <AppIcon name="calendar-plus" :size="14" />
             存入日历
+          </a-button>
+          <a-button v-if="tripPlan?.amap_map_url" @click="openExternal(tripPlan!.amap_map_url!)">
+            <AppIcon name="map" :size="14" />
+            打开高德地图
+          </a-button>
+          <a-button v-if="tripId" @click="shareTrip">
+            分享
           </a-button>
         </template>
       </div>
@@ -608,7 +645,7 @@ onBeforeUnmount(() => {
                     <div class="attr-info">
                       <div class="attr-name-row">
                         <span class="attr-name">{{ attr.name }}</span>
-                        <a-tag v-if="attr.ticket_price > 0" color="orange">门票 {{ money(attr.ticket_price) }}</a-tag>
+                        <a-tag v-if="needTicket(attr)" color="orange">需门票（以官网为准）</a-tag>
                         <a-tag v-else color="green">免费</a-tag>
                         <a-tag v-if="attr.start_time && attr.end_time" color="blue">{{ attr.start_time }}–{{ attr.end_time }}</a-tag>
                         <a-tag><AppIcon name="clock" :size="11" color="#67756d" /> {{ attr.duration }}</a-tag>
@@ -702,7 +739,7 @@ onBeforeUnmount(() => {
                       <div class="meal-meta">
                         {{ MEAL_META[meal.type]?.label }}
                         <template v-if="meal.cuisine"> · {{ meal.cuisine }}</template>
-                        <template v-if="meal.cost"> · 人均 {{ money(meal.cost) }}</template>
+                        <template v-if="meal.cost"> · 人均 {{ money(meal.cost) }}（估算）</template>
                         <template v-if="meal.specialty"> · 推荐 {{ meal.specialty }}</template>
                       </div>
                     </div>
@@ -735,7 +772,11 @@ onBeforeUnmount(() => {
                       </a-dropdown>
                     </div>
                     <div class="hotel-meta">
-                      {{ day.hotel.hotel_type }} · {{ money(day.hotel.price_per_night) }}/晚
+                      {{ day.hotel.hotel_type }} ·
+                      <template v-if="day.hotel.price_from != null">
+                        起 {{ money(day.hotel.price_from) }}<template v-if="day.hotel.price_source">（来源：携程广告价）</template>
+                      </template>
+                      <template v-else>{{ money(day.hotel.price_per_night) }}/晚（估算）</template>
                       <template v-if="day.hotel.address"> · {{ day.hotel.address }}</template>
                     </div>
                   </div>
@@ -754,8 +795,8 @@ onBeforeUnmount(() => {
           <div v-if="tripPlan.budget" class="budget-grid">
             <div class="b-item">
               <span class="b-ico"><AppIcon name="ticket" :size="18" color="#275c45" /></span>
-              <span class="b-label">门票（估算）</span>
-              <span class="b-value">{{ money(tripPlan.budget.attraction_total) }}</span>
+              <span class="b-label">门票</span>
+              <span class="b-value">{{ tripPlan.budget.attraction_total > 0 ? money(tripPlan.budget.attraction_total) : '以官网为准' }}</span>
             </div>
             <div class="b-item">
               <span class="b-ico"><AppIcon name="hotel" :size="18" color="#275c45" /></span>

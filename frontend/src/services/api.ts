@@ -122,6 +122,14 @@ export async function getMe(): Promise<{ user_id: number; username: string }> {
   return request.get('/auth/me')
 }
 
+export async function deleteAccount(): Promise<void> {
+  try {
+    await request.delete('/auth/account')
+  } finally {
+    clearToken()
+  }
+}
+
 export async function planTrip(data: TripRequest): Promise<TripPlan> {
   return request.post('/trip/plan', data)
 }
@@ -235,6 +243,16 @@ export async function swapBackup(id: number, body: { day: number; original: stri
 
 export async function deleteTrip(id: number): Promise<void> {
   await request.delete(`/trip/history/${id}`)
+}
+
+// ---------- 只读分享 ----------
+
+export async function createShare(id: number): Promise<{ share_id: string; share_url: string }> {
+  return request.post(`/trip/history/${id}/share`)
+}
+
+export async function getShareDetail(shareId: string): Promise<{ id: number; created_at: string; plan: TripPlan }> {
+  return request.get(`/trip/share/${shareId}`)
 }
 
 // ---------- 每日真实路线 / iCal 导出 ----------
