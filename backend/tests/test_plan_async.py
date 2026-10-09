@@ -11,6 +11,12 @@ POLL_TIMEOUT = 30
 
 
 @pytest.fixture(autouse=True)
+def _no_auth(monkeypatch):
+    """本文件聚焦异步流水线本身：显式关闭多用户鉴权（默认值已是 user 模式）。"""
+    monkeypatch.setattr(main_mod.settings, "auth_mode", "none")
+
+
+@pytest.fixture(autouse=True)
 def _fresh_heavy_bucket():
     """heavy 桶 5/300s：清掉跨运行残留的限流键，并确保存储已初始化（404 用例状态确定）。"""
     main_mod._get_store()

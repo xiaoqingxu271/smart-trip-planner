@@ -48,9 +48,9 @@ class Settings(BaseSettings):
     app_password: str = ""
 
     # ---------- 多用户体系（AUTH_MODE=user 时启用注册/登录与按用户隔离） ----------
-    # none（默认）：无鉴权，行程共享池，行为与从前一致；
-    # user：开放注册 + 登录后使用，行程按用户隔离（示例/无主行程全员只读），此时忽略 APP_PASSWORD
-    auth_mode: str = "none"
+    # user（默认）：开放注册 + 登录后使用，行程按用户隔离（示例/无主行程全员只读），此时忽略 APP_PASSWORD；
+    # none：无鉴权，行程共享池，仅适合本机演示——公网部署切勿关闭
+    auth_mode: str = "user"
     rate_limit_auth: str = "10/60"  # 注册/登录：10 次 / 分钟 / IP（抑制暴力破解）
 
     # ---------- 限流（每 IP 固定窗口计数，Redis 不可用时放行；格式 "次数/窗口秒"） ----------

@@ -209,19 +209,20 @@ scp "D:\Code\Practical Project\smart-trip-planner\backend\.env" root@139.196.40.
 >
 > 说明：`backend/.env` 里的 `MYSQL_HOST / MYSQL_PASSWORD / REDIS_URL` 写什么都没关系，`docker-compose.yml` 已强制用容器服务名和统一密码覆盖它们。
 
-### 6.3（建议）开启访问鉴权
+### 6.3 访问鉴权（默认已开启，无需配置）
 
-服务直接暴露在公网，建议在 `backend/.env` 末尾增加以下任一项：
+后端默认 `AUTH_MODE=user`：打开站点即出注册/登录页，行程按用户隔离，
+示例作品与无主历史行程全员只读。**公网部署保持默认即可，什么都不用加。**
+
+特殊需求时才在 `backend/.env` 中显式配置（改后需 `docker compose restart backend` 生效）：
 
 ```bash
-# 方案1：单访问码（最简单，所有人凭一个密码进入）
+# 改回无鉴权共享池（仅本机演示，公网切勿关闭）
+AUTH_MODE=none
+
+# 或改用单访问码模式（所有人凭一个密码进入；需同时 AUTH_MODE=none，user 模式下此项被忽略）
 APP_PASSWORD=你的强密码
-
-# 方案2：多用户注册登录（行程按用户隔离，与 APP_PASSWORD 二选一）
-AUTH_MODE=user
 ```
-
-修改后不重启不生效（第 7 步首次启动会直接读取）。
 
 ---
 
@@ -373,7 +374,7 @@ cd smart-trip-planner
 ## 10. 安全清单
 
 - [x] 后端端口仅绑定 `127.0.0.1`，防火墙只放行 22 / 80 / 443
-- [ ] 已配置 `APP_PASSWORD` 或 `AUTH_MODE=user`
+- [x] 鉴权默认开启（`AUTH_MODE=user` 注册/登录模式，无需配置）
 - [ ] 高德控制台为 **JS API Key 配置域名白名单**（填 `139.196.40.216` 或后续域名），防止 Key 被盗刷
 - [x] `.env`、`backend/.env` 权限：`chmod 600 .env backend/.env`
 - [x] HTTPS 已上线：Cloudflare Origin CA 证书 + nginx 443（见第 12 节）

@@ -108,7 +108,7 @@ npm run dev
 
 打开 <http://localhost:5173> 即可使用。Vite 已配置 `/api` 代理到后端 8000 端口，无跨域问题。
 
-> 💡 鉴权形态由 `.env` 决定：默认 `AUTH_MODE=none` 无需登录；配置 `AUTH_MODE=user` 后开放注册/登录（首次使用在登录页注册账号即可），行程按用户隔离；配置 `APP_PASSWORD` 则为单访问码模式。
+> 💡 鉴权形态由 `.env` 决定：**默认 `AUTH_MODE=user` 开放注册/登录**（首次使用在登录页注册账号即可），行程按用户隔离；配置 `APP_PASSWORD`（且 `AUTH_MODE=none`）为单访问码模式；`AUTH_MODE=none` 无鉴权，仅限本机演示。
 
 Windows 用户也可直接双击 `start_backend.bat` 与 `start_frontend.bat`。
 
@@ -183,9 +183,9 @@ GitHub Actions（`.github/workflows/ci.yml`）在每次 push / PR 时运行两�
 | 项 | 说明 |
 |---|---|
 | **单进程约束** | **必须单进程部署**（`uvicorn ... --workers 1`，默认即是）：代码存在单进程假设——MySQL 单连接（连接级互斥）、单个 MCP 服务器子进程、进程内图片缓存、规划并发闸门，多 worker 会破坏正确性 |
-| **监听地址** | `python -m app.api.main` 默认只监听 `127.0.0.1`；对外服务改监听地址时**务必配置 `APP_PASSWORD`** |
+| **监听地址** | `python -m app.api.main` 默认只监听 `127.0.0.1`；对外服务改监听地址时**务必保持鉴权开启**（默认 `AUTH_MODE=user` 即已开启） |
 | 访问码鉴权 | `APP_PASSWORD` 留空=关闭（本地演示行为不变）；配置后所有 `/api/*` 需带访问码（前端出登录页），401 同样计入限流配额，天然抑制暴力枚举 |
-| 多用户体系 | `AUTH_MODE=user` 启用：开放注册/登录（PBKDF2 密码 + Redis 会话 Token 7 天），行程按用户隔离；**示例作品与无主历史行程全员可读、仅本人可改删**；注册/登录限流 10 次/分/IP；此模式下忽略 `APP_PASSWORD`。`none`（默认）行为与从前一致 |
+| 多用户体系 | `AUTH_MODE=user`（**默认**）：开放注册/登录（PBKDF2 密码 + Redis 会话 Token 7 天），行程按用户隔离；**示例作品与无主历史行程全员可读、仅本人可改删**；注册/登录限流 10 次/分/IP；此模式下忽略 `APP_PASSWORD`。`none` 无鉴权，仅本机演示用 |
 | 限流 | 每 IP 固定窗口计数（Redis，fail-open），plan/replan 默认 5 次/5 分钟；`RATE_LIMIT_*` 可调，`RATE_LIMIT_ENABLED=false` 整体关闭（压测用） |
 | 宕机保护 | Redis/MySQL 探测失败进入 10s 熔断静默期 + 全链路降级，存储故障不会拖死全站 |
 | 高德 QPS | 进程级全局节拍器（`amap_pacer`）统一约束 MCP 调用、校验器与图片服务的调用间隔 |
