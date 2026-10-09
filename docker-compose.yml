@@ -55,6 +55,11 @@ services:
       - backend
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      # HTTPS 证书（Cloudflare Origin CA）只读挂载，文件放在 frontend/certs/（不入库，见 .gitignore）
+      # 缺失时 nginx 无法启动：先放置 fullchain.pem / privkey.pem 再 up
+      - ./frontend/certs:/etc/nginx/certs:ro
     restart: unless-stopped
 
 volumes:

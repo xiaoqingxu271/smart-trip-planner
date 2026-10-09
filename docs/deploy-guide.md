@@ -372,11 +372,11 @@ cd smart-trip-planner
 
 ## 10. 安全清单
 
-- [x] 后端端口仅绑定 `127.0.0.1`，防火墙只放行 22 / 80
+- [x] 后端端口仅绑定 `127.0.0.1`，防火墙只放行 22 / 80 / 443
 - [ ] 已配置 `APP_PASSWORD` 或 `AUTH_MODE=user`
 - [ ] 高德控制台为 **JS API Key 配置域名白名单**（填 `139.196.40.216` 或后续域名），防止 Key 被盗刷
-- [ ] `.env`、`backend/.env` 权限：`chmod 600 .env backend/.env`
-- [ ] 后续绑定域名后，建议再上 HTTPS（可参考 Caddy 替换 Nginx 或加 certbot 容器）
+- [x] `.env`、`backend/.env` 权限：`chmod 600 .env backend/.env`
+- [x] HTTPS 已上线：Cloudflare Origin CA 证书 + nginx 443（见第 12 节）
 
 ---
 
@@ -408,3 +408,55 @@ Git Bash 控制台把中文按 GBK 编码发出，FastAPI 按 UTF-8 解析失败
 python -c "import json,pathlib; pathlib.Path('req.json').write_bytes(json.dumps({'destination':'杭州','days':1}, ensure_ascii=False).encode('utf-8'))"
 curl -s -X POST http://139.196.40.216/api/trip/plan -H "Content-Type: application/json; charset=utf-8" --data-binary @req.json
 ```
+
+---
+
+## 12. HTTPS：Cloudflare Origin CA 证书（域名在 Cloudflare 托管）
+
+架构：浏览器 ──HTTPS──▶ Cloudflare 边缘（有效期为 15 年的 Origin 证书仅被 CF 信任）
+──HTTPS 回源 443──▶ 服务器 nginx。CF 控制台 SSL/TLS 模式建议 **Full (strict)**。
+
+### 12.1 前置
+
+1. Cloudflare DNS：`smartrip.dpdns.org` A 记录指向 `139.196.40.216`，代理状态**橙色云**（Proxied）。
+2. 阿里云轻量防火墙放行 `TCP 443`（与 80 同法添加规则）。
+
+### 12.2 签发 Origin 证书
+
+CF 控制台 → SSL/TLS → **Origin Server** → Create Certificate → 默认（RSA 2048，
+主机名 `*.smartrip.dpdns.org, smartrip.dpdns.org`，15 年）→ 复制两段内容分别保存为
+`fullchain.pem`（Origin Certificate）与 `privkey.pem`（Private Key）。
+
+### 12.3 服务器放置证书（私钥绝不进 Git）
+
+仓库已配置好：`nginx.conf` 监听 443、compose 挂载 `./frontend/certs` → `/etc/nginx/certs:ro`
+（`frontend/certs/` 已在 `.gitignore`）。只需在服务器放置文件：
+
+```bash
+mkdir -p /opt/smart-trip-planner/frontend/certs && chmod 700 $_
+# 本地 PowerShell 上传（或任意 sftp 工具）：
+# scp fullchain.pem privkey.pem root@139.196.40.216:/opt/smart-trip-planner/frontend/certs/
+chmod 600 /opt/smart-trip-planner/frontend/certs/*
+```
+
+> **80 与 443 同时服务、不做强制跳转**：若 CF SSL 模式是 Flexible，CF 回源走 80，
+> 源站强制跳 443 会造成浏览器循环重定向；Full/Full(strict) 下 CF 直接走 443，不受影响。
+
+### 12.4 生效与验证
+
+```bash
+cd /opt/smart-trip-planner
+docker compose build frontend && docker compose up -d
+
+# 服务器本机（Origin 证书不被系统信任，-k 跳过校验属预期）
+curl -sk https://127.0.0.1/api/health
+
+# 本地带 SNI 直连源站（-k：Origin 证书仅被 CF 信任，本地系统校验不过属预期；-v 可看证书域名）
+curl -k --resolve smartrip.dpdns.org:443:139.196.40.216 https://smartrip.dpdns.org/api/health
+
+# 经 Cloudflare 的正式链路
+curl https://smartrip.dpdns.org/api/health
+```
+
+浏览器直接访问 `https://smartrip.dpdns.org` 即可。证书 2041 年到期，期间无需续期；
+换域名需重签发并替换 `frontend/certs/` 下两个文件后 `docker compose restart frontend`。

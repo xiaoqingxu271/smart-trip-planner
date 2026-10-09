@@ -30,3 +30,6 @@ Thumbs.db
 
 # docker compose 部署变量（含 MySQL 密码）
 /.env
+
+# HTTPS 证书与私钥（Cloudflare Origin CA，仅存在于服务器）
+frontend/certs/
