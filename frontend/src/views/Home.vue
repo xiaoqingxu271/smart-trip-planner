@@ -23,6 +23,24 @@ const destinationSuggestions = ['北京', '上海', '西安', '成都', '杭州'
 const preferenceOptions = ['人文历史', '自然风光', '美食探店', '购物血拼', '亲子游玩', '网红打卡', '休闲度假', '博物馆控']
 const groupOptions = ['独自出行', '情侣出游', '家庭亲子', '朋友结伴']
 
+const slotOptions = [
+  { value: '', label: '全天可玩' },
+  { value: 'morning', label: '上午' },
+  { value: 'afternoon', label: '下午' },
+  { value: 'evening', label: '傍晚' },
+]
+const paceOptions = [
+  { value: 'easy', label: '轻松 · 每天≤2景' },
+  { value: 'standard', label: '标准 · 每天≤3景' },
+  { value: 'packed', label: '紧凑 · 每天≤4景' },
+]
+const transitOptions = [
+  { value: 'taxi', label: '打车' },
+  { value: 'transit', label: '公交地铁' },
+  { value: 'walk', label: '步行' },
+  { value: 'drive', label: '自驾' },
+]
+
 const today = new Date().toISOString().slice(0, 10)
 
 const form = reactive<TripRequest>({
@@ -33,7 +51,16 @@ const form = reactive<TripRequest>({
   preferences: [],
   group_type: '情侣出游',
   notes: '',
+  arrival_slot: '',
+  departure_slot: '',
+  pace: 'standard',
+  must_see: [],
+  avoid: [],
+  transit_mode: 'taxi',
+  origin: '',
 })
+
+const paceTouched = ref(false)
 
 const submitting = ref(false)
 const loadingTitle = ref('')
@@ -110,9 +137,21 @@ function togglePreference(tag: string) {
   const idx = form.preferences.indexOf(tag)
   if (idx >= 0) {
     form.preferences.splice(idx, 1)
+    if (tag === '亲子游玩' && !paceTouched.value && form.pace === 'easy') {
+      form.pace = 'standard'
+    }
   } else {
     form.preferences.push(tag)
+    // 亲子：若用户未手动改节奏，默认切到轻松（批次 3.4）
+    if (tag === '亲子游玩' && !paceTouched.value) {
+      form.pace = 'easy'
+    }
   }
+}
+
+function setPace(value: string) {
+  form.pace = value as TripRequest['pace']
+  paceTouched.value = true
 }
 
 function disabledDate(current: { format: (f: string) => string } | null) {
@@ -282,6 +321,91 @@ async function handleLogout() {
               :rows="2"
               auto-size
               class="notes-input"
+            />
+          </div>
+
+          <div class="opt-group">
+            <span class="opt-label">首日抵达 <em class="opt-optional">选填</em></span>
+            <div class="chips">
+              <button
+                v-for="s in slotOptions"
+                :key="s.value"
+                type="button"
+                class="chip"
+                :class="{ on: form.arrival_slot === s.value }"
+                @click="form.arrival_slot = s.value as TripRequest['arrival_slot']"
+              >{{ s.label }}</button>
+            </div>
+          </div>
+
+          <div class="opt-group">
+            <span class="opt-label">末日离开 <em class="opt-optional">选填</em></span>
+            <div class="chips">
+              <button
+                v-for="s in slotOptions"
+                :key="s.value"
+                type="button"
+                class="chip"
+                :class="{ on: form.departure_slot === s.value }"
+                @click="form.departure_slot = s.value as TripRequest['departure_slot']"
+              >{{ s.label }}</button>
+            </div>
+          </div>
+
+          <div class="opt-group">
+            <span class="opt-label">行程节奏</span>
+            <div class="chips">
+              <button
+                v-for="p in paceOptions"
+                :key="p.value"
+                type="button"
+                class="chip"
+                :class="{ on: form.pace === p.value }"
+                @click="setPace(p.value)"
+              >{{ p.label }}</button>
+            </div>
+          </div>
+
+          <div class="opt-group">
+            <span class="opt-label">市内交通</span>
+            <div class="chips">
+              <button
+                v-for="t in transitOptions"
+                :key="t.value"
+                type="button"
+                class="chip"
+                :class="{ on: form.transit_mode === t.value }"
+                @click="form.transit_mode = t.value as TripRequest['transit_mode']"
+              >{{ t.label }}</button>
+            </div>
+          </div>
+
+          <div class="opt-group">
+            <span class="opt-label">出发城市 <em class="opt-optional">选填</em></span>
+            <a-input v-model:value="form.origin" placeholder="本地游可留空；填了会提示大交通预留" class="opt-input" />
+          </div>
+
+          <div class="opt-group">
+            <span class="opt-label">必去地点 <em class="opt-optional">最多5个</em></span>
+            <a-select
+              v-model:value="form.must_see"
+              mode="tags"
+              :open="false"
+              :max-tag-count="5"
+              placeholder="输入后回车添加，如：中山陵"
+              class="opt-input"
+            />
+          </div>
+
+          <div class="opt-group">
+            <span class="opt-label">不去地点 <em class="opt-optional">最多5个</em></span>
+            <a-select
+              v-model:value="form.avoid"
+              mode="tags"
+              :open="false"
+              :max-tag-count="5"
+              placeholder="输入后回车添加，如：夫子庙夜市"
+              class="opt-input"
             />
           </div>
         </div>
@@ -718,6 +842,13 @@ async function handleLogout() {
 
 .notes-input {
   flex: 1;
+  border-radius: 12px;
+}
+
+.opt-input {
+  flex: 1;
+  min-width: 0;
+  max-width: 480px;
   border-radius: 12px;
 }
 

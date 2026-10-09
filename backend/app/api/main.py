@@ -32,8 +32,10 @@ from pydantic import BaseModel
 
 from ..agents.mcp_tool import MCPError
 from ..agents.trip_planner import PlannerError, get_planner
+from ..agents.validator import _get_poi_info
 from ..config import get_settings
 from ..models.schemas import (
+    Budget,
     Location,
     ReplanBody,
     TripPlan,
@@ -45,6 +47,7 @@ from ..services.cleanup import cleanup_stale_files
 from ..services.ical_service import plan_to_ics
 from ..services.image_service import ImageService
 from ..services.route_service import compute_day_routes
+from ..services.schedule_service import schedule_plan
 from ..storage.cache import Cache
 from ..storage.db import StorageUnavailable, ensure_database
 from ..storage.trip_store import TripStore
@@ -411,6 +414,72 @@ _DEMO_STAGES = [
 ]
 
 
+def _finalize_plan(request: TripRequest, plan: TripPlan) -> None:
+    """确定性后处理（批次 1.2/1.3/1.4）：就地改写 plan。
+
+    1. 真实路线 → 市内交通费回写（taxi/drive 才按打车估价；walk/transit 计 0）；
+    2. 门票合计 = Σ ticket_price（确定性）；
+    3. 一订到底时住宿合计 = 单价 × (天数-1)；
+    4. 钟点调度器填写每处景点 start_time/end_time，闭园/最晚入园超时写入 warnings；
+    5. budget_note 按交通方式选择口径说明。
+    """
+    try:
+        routes = compute_day_routes(settings.amap_api_key, _cache, plan)
+    except Exception:  # noqa: BLE001
+        logger.warning("路线计算失败，交通费与钟点采用回退口径", exc_info=True)
+        routes = {"routes": []}
+    route_by_day = {r["day"]: r for r in routes.get("routes", [])}
+    taxi_sum = round(sum(r.get("taxi_cost") or 0 for r in route_by_day.values()), 2)
+
+    if plan.budget is None:
+        plan.budget = Budget()
+    plan.budget.attraction_total = round(
+        sum(a.ticket_price for d in plan.daily_plans for a in d.attractions), 2
+    )
+
+    # 酒店合计：全程同一酒店时按 单价 × 晚数 重写（晚数 = 天数-1）
+    hotels = [d.hotel for d in plan.daily_plans if d.hotel]
+    names = {h.name for h in hotels if h}
+    if len(names) == 1:
+        nights = max(1, plan.days - 1)
+        plan.budget.hotel_total = round(hotels[0].price_per_night * nights, 2)
+
+    # 市内交通费按方式回写
+    if request.transit_mode in ("taxi", "drive"):
+        plan.budget.transport_total = taxi_sum
+        plan.budget_note = "门票/住宿/餐饮为模型估算，交通为高德打车估价"
+    elif request.transit_mode == "walk":
+        plan.budget.transport_total = 0
+        plan.budget_note = "门票/住宿/餐饮为模型估算，交通按步行计（未计打车）"
+    else:  # transit
+        plan.budget.transport_total = 0
+        plan.budget_note = "门票/住宿/餐饮为模型估算，交通为公交/地铁（费用未计入）"
+
+    items_sum = (
+        plan.budget.attraction_total + plan.budget.hotel_total
+        + plan.budget.meal_total + plan.budget.transport_total
+    )
+    if items_sum > 0:
+        plan.budget.grand_total = round(items_sum, 2)
+
+    # 开园时间富化（复用校验器缓存，零额外高德开销）＋ 钟点调度
+    open_times: dict[str, str] = {}
+    try:
+        planner = get_planner(settings)
+        for d in plan.daily_plans:
+            for a in d.attractions:
+                info = _get_poi_info(planner.mcp_tool.client, planner._cache, a.name, plan.destination)
+                if info and info.get("opentime"):
+                    open_times[a.name] = info["opentime"]
+                    a.open_time_text = info["opentime"]
+    except Exception:  # noqa: BLE001
+        logger.warning("开园时间核验失败，仅按钟点排程", exc_info=True)
+    sched_warnings = schedule_plan(plan, request, route_by_day, open_times)
+    for w in sched_warnings:
+        if w not in plan.warnings:
+            plan.warnings.append(w)
+
+
 def _plan_execute(request: TripRequest, progress=None, user_id: int | None = None) -> TripPlan:
     """规划执行主体：结果缓存 → 流水线 → 图片增强 → 入库 → 结果写缓存。
 
@@ -446,6 +515,12 @@ def _plan_execute(request: TripRequest, progress=None, user_id: int | None = Non
         _enrich_images(plan)
     except Exception:  # noqa: BLE001
         logger.warning("图片增强失败（跳过）", exc_info=True)
+
+    # 确定性后处理：真实路线 → 市内交通费/钟点回写；门票合计求和（批次 1.2/1.3/1.4）
+    try:
+        _finalize_plan(request, plan)
+    except Exception:  # noqa: BLE001
+        logger.warning("确定性后处理失败（保留估算口径）", exc_info=True)
 
     # 自动入库（失败不影响返回，历史功能降级）
     if store:
@@ -712,6 +787,12 @@ async def replan_trip(body: ReplanBody, http: Request):
 
     await loop.run_in_executor(_io_executor, _enrich_images, new_plan)
     new_plan.parent_id = body.trip_id
+
+    # 重规划同样重新计算路线并回写交通费/钟点（批次 1.2/1.3）
+    try:
+        _finalize_plan(original_request, new_plan)
+    except Exception:  # noqa: BLE001
+        logger.warning("重规划确定性后处理失败", exc_info=True)
 
     def _save():
         return _get_store_or_503().save(original_request, new_plan, user_id)

@@ -6,10 +6,10 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from datetime import datetime, timedelta, timezone
 
 from ..models.schemas import DayPlan, Meal, TripPlan
+from ..utils.duration import parse_duration
 
 MEAL_TIMES = {"breakfast": (8, 0), "lunch": (12, 0), "dinner": (18, 0)}
 MEAL_LABELS = {"breakfast": "早餐", "lunch": "午餐", "dinner": "晚餐"}
@@ -32,15 +32,13 @@ def _esc(text: str) -> str:
     )
 
 
-def _parse_duration(text: str) -> timedelta:
-    """"2小时"/"1.5小时"/"90分钟" → timedelta；解析失败默认 2 小时。"""
-    m = re.search(r"(\d+(?:\.\d+)?)\s*小时", text or "")
-    if m:
-        return timedelta(hours=float(m.group(1)))
-    m = re.search(r"(\d+)\s*分钟", text or "")
-    if m:
-        return timedelta(minutes=int(m.group(1)))
-    return timedelta(hours=2)
+def _to_dt(d0: datetime, hhmm: str) -> datetime | None:
+    """"14:30" + 当天 00:00 → datetime；解析失败返回 None。"""
+    try:
+        hh, mm = str(hhmm).split(":")
+        return d0.replace(hour=int(hh), minute=int(mm))
+    except (ValueError, AttributeError):
+        return None
 
 
 def _uid(plan: TripPlan, day: DayPlan, kind: str, idx: int) -> str:
@@ -82,8 +80,12 @@ def plan_to_ics(plan: TripPlan) -> str:
 
         cursor = d0.replace(hour=DEFAULT_ATTRACTION_START)
         for i, a in enumerate(day.attractions):
-            start = cursor
-            end = start + _parse_duration(a.duration)
+            # 优先使用调度器填写的钟点（与结果页时间线一致），老数据回退 09:00 顺延
+            start = _to_dt(d0, a.start_time) if a.start_time else None
+            end = _to_dt(d0, a.end_time) if (start and a.end_time) else None
+            if not (start and end):
+                start = cursor
+                end = start + parse_duration(a.duration)
             _event(
                 lines,
                 _uid(plan, day, "attraction", i),

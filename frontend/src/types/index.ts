@@ -17,6 +17,10 @@ export interface Attraction {
   ticket_price: number
   recommended_reason: string
   image_url?: string | null
+  // 后端确定性调度器填写的钟点；老数据可能没有
+  start_time?: string
+  end_time?: string
+  open_time_text?: string
 }
 
 export interface Meal {
@@ -74,6 +78,7 @@ export interface TripPlan {
   daily_plans: DayPlan[]
   budget?: Budget | null
   tips: string[]
+  budget_note?: string
   demo: boolean
   trip_id?: number | null
   warnings?: string[]
@@ -116,6 +121,13 @@ export interface TripRequest {
   preferences: string[]
   group_type: string
   notes: string
+  arrival_slot?: '' | 'morning' | 'afternoon' | 'evening'
+  departure_slot?: '' | 'morning' | 'afternoon' | 'evening'
+  pace?: 'easy' | 'standard' | 'packed'
+  must_see?: string[]
+  avoid?: string[]
+  transit_mode?: 'walk' | 'transit' | 'taxi' | 'drive'
+  origin?: string
 }
 
 export interface AppConfig {

@@ -150,3 +150,49 @@ def test_density_rule():
     plan = make_plan([attr(n, 116.0 + i * 0.01, 39.9) for i, n in enumerate(("甲", "乙", "丙", "丁"))])
     issues = validate_plan(plan, REQ, client, FakeCache())
     assert "density" in kinds(issues)
+
+
+def test_easy_pace_flags_three_attractions():
+    """easy 节奏下 3 个景点应触发密度强问题（上限 2）。"""
+    req = TripRequest(destination="北京", start_date="2026-03-02", days=1, pace="easy")
+    client = FakeValidatorClient({n: [] for n in ("甲", "乙", "丙")}, {})
+    plan = make_plan([attr(n, 116.0 + i * 0.01, 39.9) for i, n in enumerate(("甲", "乙", "丙"))])
+    issues = validate_plan(plan, req, client, FakeCache())
+    d = kinds(issues).get("density")
+    assert d is not None and d["strong"] is True
+
+
+def test_evening_arrival_day1_with_attraction_is_strong():
+    """首日傍晚抵达却排了景点 → edge_day 强问题。"""
+    req = TripRequest(destination="北京", start_date="2026-03-02", days=1, arrival_slot="evening")
+    client = FakeValidatorClient({"故宫先烈": [GUGONG]}, {})
+    plan = make_plan([attr("故宫博物院", 116.397428, 39.90923)])
+    issues = validate_plan(plan, req, client, FakeCache())
+    edge = [i for i in issues if i["kind"] == "edge_day"]
+    assert edge and edge[0]["strong"] is True
+
+
+def test_missing_must_flagged():
+    req = TripRequest(destination="北京", start_date="2026-03-02", days=1, must_see=["中山陵"])
+    client = FakeValidatorClient({"故宫博物院": [GUGONG]}, {})
+    plan = make_plan([attr("故宫博物院", 116.397428, 39.90923)])
+    issues = validate_plan(plan, req, client, FakeCache())
+    assert any(i["kind"] == "missing_must" and i["name"] == "中山陵" for i in issues)
+
+
+def test_avoid_hit_flagged():
+    req = TripRequest(destination="北京", start_date="2026-03-02", days=1, avoid=["天坛"])
+    client = FakeValidatorClient({"天坛公园": []}, {})
+    plan = make_plan([attr("天坛公园", 116.397428, 39.90923)])
+    issues = validate_plan(plan, req, client, FakeCache())
+    assert any(i["kind"] == "avoid_hit" for i in issues)
+
+
+def test_walk_mode_flags_over_2km():
+    """步行模式：相邻点直线 >2km 判 far，且不调驾车距离 API。"""
+    req = TripRequest(destination="北京", start_date="2026-03-02", days=1, transit_mode="walk")
+    client = FakeValidatorClient({"甲": [], "乙": []}, {})  # 无任何距离数据
+    plan = make_plan([attr("甲", 116.0, 39.9), attr("乙", 116.03, 39.9)])  # 直线约 2.5km
+    issues = validate_plan(plan, req, client, FakeCache())
+    far = kinds(issues).get("far")
+    assert far is not None and "步行" in far["text"]

@@ -1,0 +1,984 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能旅行助手 · AI 应用工程落地复盘（面试版）</title>
+<style>
+  :root{
+    --cream:#FAF7F0; --cream-2:#F3EEE2; --cream-3:#EDE6D6;
+    --forest:#2E5940; --forest-deep:#1E3D2B; --forest-soft:#E2EDE4;
+    --amber:#C98F2B; --amber-soft:#F6ECD6;
+    --ink:#26352B; --muted:#68766B; --line:#E1D9C7;
+    --danger:#A8552F; --danger-soft:#F6E4DC;
+    --card:#FFFFFF;
+    --shadow:0 1px 2px rgba(38,53,43,.05), 0 6px 24px rgba(38,53,43,.07);
+    --radius:14px;
+    --serif:Georgia,"Songti SC","STSong","SimSun",serif;
+    --sans:"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html{scroll-behavior:smooth;}
+  body{
+    font-family:var(--sans); color:var(--ink); background:var(--cream);
+    line-height:1.75; font-size:15.5px;
+  }
+  ::selection{background:var(--amber-soft);}
+
+  /* ---------- 通用 ---------- */
+  .wrap{max-width:1080px; margin:0 auto; padding:0 24px;}
+  section{padding:72px 0;}
+  .kicker{
+    display:inline-flex; align-items:center; gap:8px;
+    font-size:12px; letter-spacing:.22em; font-weight:700; color:var(--amber);
+    text-transform:uppercase; margin-bottom:14px;
+  }
+  .kicker::before{content:""; width:26px; height:2px; background:var(--amber); display:inline-block;}
+  h2{font-family:var(--serif); font-size:32px; line-height:1.3; color:var(--forest-deep); margin-bottom:10px;}
+  .lead{color:var(--muted); max-width:760px; margin-bottom:40px;}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow);}
+  .tag{
+    display:inline-block; font-size:11.5px; font-weight:600; padding:2px 10px;
+    border-radius:99px; background:var(--forest-soft); color:var(--forest);
+  }
+  .tag.amber{background:var(--amber-soft); color:#8A6215;}
+  .tag.red{background:var(--danger-soft); color:var(--danger);}
+  .quote{
+    border-left:3px solid var(--amber); background:var(--amber-soft);
+    border-radius:0 10px 10px 0; padding:10px 14px; font-size:13.5px; color:#6B5213;
+  }
+  .quote b{color:#8A6215;}
+  .muted{color:var(--muted);}
+  .num{font-variant-numeric:tabular-nums;}
+
+  /* ---------- Hero ---------- */
+  .hero{
+    background:linear-gradient(160deg, var(--forest-deep) 0%, var(--forest) 62%, #3C6B4E 100%);
+    color:#F4F1E8; padding:84px 0 64px; position:relative; overflow:hidden;
+  }
+  .hero::after{
+    content:""; position:absolute; right:-140px; top:-140px; width:460px; height:460px;
+    border-radius:50%; border:64px solid rgba(244,241,232,.06); pointer-events:none;
+  }
+  .hero .kicker{color:#E5C883;}
+  .hero .kicker::before{background:#E5C883;}
+  .hero h1{font-family:var(--serif); font-size:clamp(30px,4.6vw,46px); line-height:1.25; max-width:820px;}
+  .hero h1 em{font-style:normal; color:#EBCB7F;}
+  .hero p.sub{margin:18px 0 26px; max-width:720px; color:rgba(244,241,232,.82); font-size:16px;}
+  .chips{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:44px;}
+  .chip{
+    font-size:12.5px; padding:5px 13px; border-radius:99px;
+    border:1px solid rgba(244,241,232,.28); color:rgba(244,241,232,.92);
+    background:rgba(244,241,232,.07); backdrop-filter:blur(2px);
+  }
+  .stats{
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(128px,1fr)); gap:1px;
+    background:rgba(244,241,232,.16); border:1px solid rgba(244,241,232,.16);
+    border-radius:var(--radius); overflow:hidden;
+  }
+  .stat{background:rgba(30,61,43,.55); padding:18px 14px; text-align:center;}
+  .stat b{display:block; font-family:var(--serif); font-size:30px; color:#EBCB7F; line-height:1.15;}
+  .stat span{font-size:12px; color:rgba(244,241,232,.72); letter-spacing:.05em;}
+
+  /* ---------- 导航 ---------- */
+  nav.toc{
+    position:sticky; top:0; z-index:50; background:rgba(250,247,240,.94);
+    backdrop-filter:blur(8px); border-bottom:1px solid var(--line);
+  }
+  nav.toc .wrap{display:flex; gap:4px; overflow-x:auto; padding:10px 24px;}
+  nav.toc a{
+    flex-shrink:0; font-size:13px; font-weight:600; color:var(--muted);
+    text-decoration:none; padding:6px 13px; border-radius:99px; transition:.2s;
+  }
+  nav.toc a:hover{background:var(--forest-soft); color:var(--forest-deep);}
+
+  /* ---------- 架构图 ---------- */
+  .arch{display:flex; flex-direction:column; gap:0;}
+  .arch-layer{padding:20px 24px;}
+  .arch-layer h3{
+    font-size:13px; letter-spacing:.14em; font-weight:700; color:var(--forest);
+    text-transform:uppercase; margin-bottom:12px; display:flex; align-items:center; gap:8px;
+  }
+  .arch-layer h3 .no{
+    width:22px; height:22px; border-radius:50%; background:var(--forest); color:#fff;
+    display:inline-flex; align-items:center; justify-content:center; font-size:11.5px; letter-spacing:0;
+  }
+  .arch-boxes{display:flex; flex-wrap:wrap; gap:10px;}
+  .abox{
+    border:1px solid var(--line); border-radius:10px; background:var(--cream);
+    padding:8px 14px; font-size:13.5px; line-height:1.5;
+  }
+  .abox b{display:block; font-size:13.5px; color:var(--forest-deep);}
+  .abox span{font-size:12px; color:var(--muted);}
+  .abox.hl{border-color:var(--amber); background:var(--amber-soft);}
+  .arrow-row{
+    display:flex; align-items:center; justify-content:center; gap:12px;
+    padding:6px 0; color:var(--amber); font-weight:700;
+  }
+  .arrow-row .label{font-size:12px; color:var(--muted); font-weight:600; letter-spacing:.05em;}
+  .arrow-row .line{flex:1; max-width:180px; height:0; border-top:2px dashed var(--line);}
+  .duo{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
+  .duo .arch-layer{position:relative;}
+  .duo h3 .no{background:var(--amber);}
+
+  /* ---------- 流程时间线 ---------- */
+  .flow{position:relative; margin-left:8px; padding-left:34px;}
+  .flow::before{
+    content:""; position:absolute; left:9px; top:8px; bottom:8px; width:2px;
+    background:linear-gradient(var(--forest) 0%, var(--amber) 100%); border-radius:2px;
+  }
+  .step{position:relative; margin-bottom:18px;}
+  .step::before{
+    content:attr(data-n); position:absolute; left:-34px; top:16px;
+    width:24px; height:24px; border-radius:50%; background:#fff; border:2px solid var(--forest);
+    color:var(--forest); font-weight:700; font-size:12px;
+    display:flex; align-items:center; justify-content:center; font-variant-numeric:tabular-nums;
+  }
+  .step .card{padding:18px 22px;}
+  .step h4{font-size:16.5px; color:var(--forest-deep); display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:6px;}
+  .step p{font-size:14px; color:#3E4C42;}
+  .step p b{color:var(--forest-deep);}
+
+  /* ---------- 智能体 ---------- */
+  .agents{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; margin-bottom:16px;}
+  .agent{padding:20px; position:relative; overflow:hidden;}
+  .agent::before{content:""; position:absolute; top:0; left:0; right:0; height:4px; background:var(--forest);}
+  .agent.zero::before{background:var(--amber);}
+  .agent .role{font-size:11px; letter-spacing:.16em; color:var(--muted); text-transform:uppercase;}
+  .agent h4{font-family:var(--serif); font-size:18px; color:var(--forest-deep); margin:4px 0 8px;}
+  .agent p{font-size:13.5px; color:#415046; margin-bottom:10px;}
+  .agent .tools{display:flex; flex-wrap:wrap; gap:6px;}
+  .agent .tools code{
+    font-size:11.5px; background:var(--cream-2); border:1px solid var(--line);
+    border-radius:6px; padding:2px 8px; color:var(--forest-deep);
+  }
+  .agent-note{padding:16px 22px; display:flex; flex-wrap:wrap; gap:10px 26px; font-size:13.5px; color:#415046;}
+  .agent-note b{color:var(--forest-deep);}
+
+  /* ---------- Agent 底层深拆 ---------- */
+  .deep{margin-top:46px; display:flex; flex-direction:column; gap:34px;}
+  .deep>h3{
+    font-family:var(--serif); font-size:21px; color:var(--forest-deep);
+    display:flex; align-items:center; gap:10px; margin-bottom:4px;
+  }
+  .deep>h3 .dno{
+    font-family:var(--sans); font-size:12px; font-weight:700; color:var(--amber);
+    border:1.5px solid var(--amber); border-radius:8px; padding:1px 8px; letter-spacing:.08em;
+  }
+  .deep>p.ddesc{color:var(--muted); font-size:14px; margin-bottom:14px;}
+
+  /* 调用栈分层 */
+  .stack{border-radius:12px; overflow:hidden; border:1px solid var(--line);}
+  .stack-row{
+    display:grid; grid-template-columns:150px 1fr; gap:14px; align-items:center;
+    padding:13px 18px; border-bottom:1px solid var(--line); background:#fff;
+  }
+  .stack-row:last-child{border-bottom:none;}
+  .stack-row .lvl{font-weight:700; font-size:13px; color:var(--forest-deep);}
+  .stack-row .lvl small{display:block; font-weight:500; color:var(--muted); font-size:11px; margin-top:2px;}
+  .stack-row .imp{font-size:13px; color:#415046;}
+  .stack-row .imp code{font-size:12px;}
+  .stack-row.hl{background:var(--amber-soft);}
+  .stack-row.soft{background:var(--forest-soft);}
+
+  /* 消息流 */
+  .msgflow{display:flex; flex-direction:column; gap:10px;}
+  .msg{
+    border:1px solid var(--line); border-radius:10px; padding:10px 14px; background:#fff;
+    font-size:12.5px; position:relative;
+  }
+  .msg .role{
+    font-size:10.5px; font-weight:700; letter-spacing:.1em; text-transform:uppercase;
+    display:inline-block; padding:1px 8px; border-radius:99px; margin-bottom:5px;
+  }
+  .msg.sys .role{background:#E7E3F2; color:#5B4E8F;}
+  .msg.user .role{background:var(--forest-soft); color:var(--forest);}
+  .msg.assistant .role{background:var(--amber-soft); color:#8A6215;}
+  .msg.tool .role{background:var(--danger-soft); color:var(--danger);}
+  .msg pre{
+    font-family:Consolas,"Courier New",monospace; font-size:11.5px; line-height:1.6;
+    white-space:pre-wrap; word-break:break-word; color:#33403a;
+  }
+  .msg .arrow-hint{font-size:11px; color:var(--muted); margin-top:4px;}
+  .flow-arrow{text-align:center; color:var(--amber); font-size:15px; line-height:1;}
+
+  /* 通用代码块 */
+  pre.code{
+    background:var(--forest-deep); color:#E8E4D8; border-radius:10px; padding:14px 16px;
+    font-family:Consolas,"Courier New",monospace; font-size:12.5px; line-height:1.7;
+    overflow-x:auto;
+  }
+  pre.code .cm{color:#9AAE9E;}
+  pre.code .kw{color:#EBCB7F;}
+  pre.code .fn{color:#A8C7B4;}
+
+  /* 对比表 */
+  .cmp{width:100%; border-collapse:collapse; font-size:13px; background:#fff; border-radius:12px; overflow:hidden; border:1px solid var(--line);}
+  .cmp th,.cmp td{padding:11px 14px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top;}
+  .cmp th{background:var(--forest-deep); color:#F4F1E8; font-weight:600; font-size:12.5px;}
+  .cmp tr:last-child td{border-bottom:none;}
+  .cmp td:first-child{font-weight:700; color:var(--forest-deep); white-space:nowrap;}
+  .cmp .yes{color:var(--forest); font-weight:700;}
+  .cmp .no{color:var(--danger); font-weight:700;}
+
+  /* ---------- 亮点分组 ---------- */
+  .group{margin-bottom:44px;}
+  .group>h3{
+    font-family:var(--serif); font-size:21px; color:var(--forest-deep); margin-bottom:6px;
+    display:flex; align-items:center; gap:10px;
+  }
+  .group>h3 .gno{
+    font-family:var(--sans); font-size:12px; font-weight:700; color:var(--amber);
+    border:1.5px solid var(--amber); border-radius:8px; padding:1px 8px; letter-spacing:.08em;
+  }
+  .group>p.desc{color:var(--muted); font-size:14px; margin-bottom:16px;}
+  .hl-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px;}
+  .hl-card{padding:22px; display:flex; flex-direction:column; gap:10px;}
+  .hl-card h4{font-size:16px; color:var(--forest-deep); line-height:1.45;}
+  .hl-card p{font-size:13.5px; color:#415046;}
+  .hl-card p b{color:var(--forest-deep);}
+  .hl-card .quote{margin-top:auto;}
+
+  /* ---------- 踩坑 ---------- */
+  .pits{display:grid; grid-template-columns:repeat(auto-fit,minmax(310px,1fr)); gap:14px;}
+  .pit{padding:20px 22px; border-top:4px solid var(--danger);}
+  .pit h4{font-size:15px; color:var(--forest-deep); margin-bottom:8px; line-height:1.5;}
+  .pit dl{font-size:13px; display:grid; grid-template-columns:auto 1fr; gap:3px 10px;}
+  .pit dt{font-weight:700; color:var(--danger); white-space:nowrap;}
+  .pit dd{color:#415046;}
+
+  /* ---------- 问答 ---------- */
+  .pitch{
+    background:linear-gradient(150deg, var(--forest-deep), var(--forest));
+    color:#F4F1E8; border-radius:var(--radius); padding:30px 34px; margin-bottom:40px;
+  }
+  .pitch h3{font-family:var(--serif); font-size:20px; color:#EBCB7F; margin-bottom:12px;}
+  .pitch p{font-size:14.5px; line-height:1.9; color:rgba(244,241,232,.92);}
+  .pitch p+p{margin-top:10px;}
+  .qa details{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:0; margin-bottom:12px; overflow:hidden;
+  }
+  .qa summary{
+    cursor:pointer; list-style:none; padding:16px 22px; font-weight:600;
+    font-size:15px; color:var(--forest-deep); display:flex; align-items:center; gap:12px;
+  }
+  .qa summary::-webkit-details-marker{display:none;}
+  .qa summary::before{
+    content:"Q"; flex-shrink:0; width:24px; height:24px; border-radius:8px;
+    background:var(--forest-soft); color:var(--forest); font-size:13px; font-weight:700;
+    display:inline-flex; align-items:center; justify-content:center;
+  }
+  .qa summary::after{content:"+"; margin-left:auto; color:var(--amber); font-size:20px; font-weight:400;}
+  .qa details[open] summary::after{content:"–";}
+  .qa .a{padding:0 22px 18px 58px; font-size:14px; color:#415046;}
+  .qa .a b{color:var(--forest-deep);}
+
+  footer{background:var(--forest-deep); color:rgba(244,241,232,.65); padding:36px 0; font-size:13px;}
+  footer .wrap{display:flex; flex-wrap:wrap; gap:12px 30px; justify-content:space-between; align-items:center;}
+
+  /* ---------- 动效 ---------- */
+  .reveal{opacity:0; transform:translateY(18px); transition:opacity .6s ease, transform .6s ease;}
+  .reveal.in{opacity:1; transform:none;}
+  @media (prefers-reduced-motion:reduce){.reveal{opacity:1; transform:none; transition:none;}}
+
+  @media (max-width:640px){
+    section{padding:52px 0;}
+    .duo{grid-template-columns:1fr;}
+    .hero{padding:60px 0 44px;}
+  }
+  @media print{
+    nav.toc{display:none;}
+    .hero{background:var(--forest-deep) !important; -webkit-print-color-adjust:exact; print-color-adjust:exact;}
+    .qa details{break-inside:avoid;}
+    .step .card, .hl-card, .pit{break-inside:avoid;}
+  }
+</style>
+</head>
+<body>
+
+<!-- ================= HERO ================= -->
+<header class="hero">
+  <div class="wrap">
+    <span class="kicker">Smart Trip Planner · AI 应用工程落地复盘</span>
+    <h1>智能旅行助手：<br>把<em>多智能体 Demo</em><br>做成<em>可交付的工程产品</em></h1>
+    <p class="sub">
+      四个专用智能体协作，通过 MCP 协议调用高德地图真实数据，生成含景点、三餐、酒店、天气、预算的完整行程；
+      支持地图可视化、行程编辑、反馈重规划与三格式导出。本页是对整个项目的流程梳理，
+      以及面试时值得展开讲的 AI 应用工程化经验。
+    </p>
+    <div class="chips">
+      <span class="chip">Python 3.12</span><span class="chip">FastAPI</span><span class="chip">Pydantic v2</span>
+      <span class="chip">OpenAI Python SDK v1</span><span class="chip">Function Calling</span><span class="chip">手写 MCP 客户端 (stdio JSON-RPC)</span>
+      <span class="chip">高德地图 MCP × 12 工具</span><span class="chip">DeepSeek (OpenAI 兼容协议)</span>
+      <span class="chip">MySQL 8</span><span class="chip">Redis</span>
+      <span class="chip">Vue 3 + TS</span><span class="chip">Ant Design Vue</span><span class="chip">Vite</span>
+      <span class="chip">GitHub Actions CI</span><span class="chip">Docker Compose</span>
+    </div>
+    <div class="stats">
+      <div class="stat"><b class="num">4</b><span>协作智能体</span></div>
+      <div class="stat"><b class="num">12</b><span>MCP 地图工具</span></div>
+      <div class="stat"><b class="num">16</b><span>REST 端点</span></div>
+      <div class="stat"><b class="num">43</b><span>后端测试用例</span></div>
+      <div class="stat"><b class="num">4</b><span>类确定性校验</span></div>
+      <div class="stat"><b class="num">3</b><span>级图片降级</span></div>
+      <div class="stat"><b class="num">~3.7k</b><span>行后端核心代码</span></div>
+    </div>
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="wrap">
+    <a href="#arch">① 全景架构</a>
+    <a href="#flow">② 端到端流程</a>
+    <a href="#agents">③ 智能体设计</a>
+    <a href="#hl">④ 工程亮点</a>
+    <a href="#pit">⑤ 踩坑实录</a>
+    <a href="#qa">⑥ 面试问答</a>
+  </div>
+</nav>
+
+<!-- ================= 1 全景架构 ================= -->
+<section id="arch">
+  <div class="wrap">
+    <span class="kicker">Architecture</span>
+    <h2>系统全景：五层架构，一条主线</h2>
+    <p class="lead">
+      分层原则：<b>MySQL 是唯一事实来源，Redis 只做加速与协调</b>；LLM 只负责"整合与生成"，
+      一切需要事实依据的判断（POI 是否存在、闭馆日、距离）都交给确定性代码与真实数据源。
+    </p>
+
+    <div class="arch card reveal">
+      <div class="arch-layer">
+        <h3><span class="no">1</span> 前端层 · Vue 3 + TypeScript + Ant Design Vue</h3>
+        <div class="arch-boxes">
+          <div class="abox"><b>Home.vue</b><span>规划表单 + 精选行程画廊</span></div>
+          <div class="abox"><b>Result.vue</b><span>时间线 / 地图 / Bento 预算 / 导出</span></div>
+          <div class="abox"><b>Login.vue</b><span>三形态鉴权的注册登录</span></div>
+          <div class="abox"><b>api.ts</b><span>Axios 封装 · 2 分钟超时</span></div>
+          <div class="abox"><b>types/</b><span>与后端 Schema 一一对应的 TS 类型</span></div>
+          <div class="abox"><b>设计系统</b><span>森林绿+奶油设计令牌 · Lucide 图标</span></div>
+        </div>
+      </div>
+      <div class="arrow-row"><span class="line"></span><span>⇅</span><span class="label">HTTP / JSON · Vite /api 代理免跨域 · 任务轮询</span><span class="line"></span></div>
+      <div class="arch-layer">
+        <h3><span class="no">2</span> 后端层 · FastAPI</h3>
+        <div class="arch-boxes">
+          <div class="abox"><b>中间件链</b><span>CORS → 限流 → 鉴权（401 也计配额）</span></div>
+          <div class="abox"><b>双线程池</b><span>pipeline×2 与 io×4 隔离防饿死</span></div>
+          <div class="abox"><b>异步 Job 调度</b><span>提交/轮询 · 状态存 Redis</span></div>
+          <div class="abox"><b>图片代理</b><span>白名单 + 逐跳复查 + 魔数嗅探</span></div>
+          <div class="abox"><b>规划后校验</b><span>确定性 Validator + 定向修复</span></div>
+          <div class="abox"><b>导出服务</b><span>PDF / 长图 / iCal / 每日驾车路线</span></div>
+        </div>
+      </div>
+      <div class="arrow-row"><span class="line"></span><span>⇅</span><span class="label">读写 · 写后失效缓存 · 双库独立降级</span><span class="line"></span></div>
+      <div class="arch-layer duo" style="padding:0; background:transparent; border:none; box-shadow:none; display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+        <div class="card arch-layer" style="box-shadow:none;">
+          <h3><span class="no">3</span> MySQL · 唯一事实源</h3>
+          <div class="arch-boxes">
+            <div class="abox"><b>trips 表</b><span>请求 + 完整计划 JSON + 预算 + 版本链</span></div>
+            <div class="abox"><b>users 表</b><span>PBKDF2 口令 · 多用户隔离</span></div>
+            <div class="abox"><b>init.sql</b><span>启动自动执行 · 可重复执行</span></div>
+          </div>
+        </div>
+        <div class="card arch-layer" style="box-shadow:none;">
+          <h3><span class="no">4</span> Redis · 加速与协调</h3>
+          <div class="arch-boxes">
+            <div class="abox"><b>详情缓存</b><span>TTL 24h · 写后失效</span></div>
+            <div class="abox"><b>规划锁</b><span>SETNX+Token+Lua 释放</span></div>
+            <div class="abox"><b>Job 状态</b><span>任务状态机 24h</span></div>
+            <div class="abox"><b>限流计数</b><span>Lua 原子固定窗口</span></div>
+            <div class="abox"><b>POI 缓存</b><span>图片/营业时间 7 天</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="arrow-row"><span class="line"></span><span>⇅</span><span class="label">函数调用（线程池内）</span><span class="line"></span></div>
+      <div class="arch-layer">
+        <h3><span class="no">5</span> 智能体层 · 轻量 Agent 抽象（底层：OpenAI SDK + Function Calling 手写循环）</h3>
+        <div class="arch-boxes">
+          <div class="abox hl"><b>AttractionSearchAgent</b><span>SimpleAgent · 白名单 3 工具</span></div>
+          <div class="abox hl"><b>WeatherQueryAgent</b><span>SimpleAgent · 白名单 1 工具</span></div>
+          <div class="abox hl"><b>HotelAgent</b><span>SimpleAgent · 白名单 1 工具</span></div>
+          <div class="abox"><b>PlannerAgent</b><span>零工具 · 整合输出严格 JSON</span></div>
+          <div class="abox"><b>TripPlannerAgent 编排器</b><span>顺序流水线 · 字符串拼接传参</span></div>
+          <div class="abox"><b>共享 MCP 子进程</b><span>单连接 · 全局节拍器 0.35s</span></div>
+        </div>
+      </div>
+      <div class="arrow-row"><span class="line"></span><span>⇅</span><span class="label">stdio JSON-RPC 2.0 · HTTPS</span><span class="line"></span></div>
+      <div class="arch-layer">
+        <h3><span class="no">6</span> 外部服务层</h3>
+        <div class="arch-boxes">
+          <div class="abox"><b>高德 MCP 服务器</b><span>npx 子进程 · 12 个地图工具</span></div>
+          <div class="abox"><b>LLM API</b><span>OpenAI 兼容（DeepSeek / 智谱…）</span></div>
+          <div class="abox"><b>Unsplash API</b><span>氛围图兜底（可选）</span></div>
+        </div>
+      </div>
+    </div>
+
+    <p class="muted" style="margin-top:16px; font-size:13px;">
+      绿色高亮 = 工具型智能体（白名单最小权限）。部署约束：单进程（<code>--workers 1</code>）——
+      MySQL 单连接、单个 MCP 子进程、进程内缓存与并发闸门都建立在单进程假设上，这是有意的取舍并在 README 中显式声明。
+    </p>
+  </div>
+</section>
+
+<!-- ================= 2 端到端流程 ================= -->
+<section id="flow" style="background:var(--cream-2);">
+  <div class="wrap">
+    <span class="kicker">End-to-End Flow</span>
+    <h2>一次规划的完整旅程（8 步）</h2>
+    <p class="lead">
+      从用户点击"生成行程"到拿到可编辑、可导出的完整计划，全程约 30–90 秒。
+      每一步都标注了背后的工程决策。
+    </p>
+
+    <div class="flow">
+      <div class="step" data-n="1">
+        <div class="card reveal">
+          <h4>提交规划 <span class="tag">异步解耦</span></h4>
+          <p><b>POST /api/trip/plan/async</b> 立即返回 job_id。限流（429）、并发闸门、相同请求规划锁（409）都在<b>提交时同步判定</b>——冲突立刻反馈，不让用户白等。</p>
+        </div>
+      </div>
+      <div class="step" data-n="2">
+        <div class="card reveal">
+          <h4>后台调度 <span class="tag">状态外置</span></h4>
+          <p>任务进入 pipeline 线程池执行，进度实时写 Redis（job 状态机 pending → running → succeeded / failed，TTL 24h）。<b>客户端断开、关页面、换设备都不丢任务</b>；Redis 不可用时自动降级为同步模式。</p>
+        </div>
+      </div>
+      <div class="step" data-n="3">
+        <div class="card reveal">
+          <h4>结果缓存检查 <span class="tag">幂等复用</span></h4>
+          <p>对请求做指纹哈希（<b>start_date 为空时按"今天"归一化</b>，避免今天和明天命中同一份过期天气的缓存），命中 24h 结果缓存则零成本直接复用。</p>
+        </div>
+      </div>
+      <div class="step" data-n="4">
+        <div class="card reveal">
+          <h4>多智能体流水线 <span class="tag">四 Agent 协作</span></h4>
+          <p>① 景点搜索 → ② 天气查询 → ③ 酒店推荐 → ④ 前三步结果拼接上下文交给 Planner 整合。每个阶段通过回调把<b>真实进度</b>写进 job 状态，前端展示的不是假进度条。</p>
+        </div>
+      </div>
+      <div class="step" data-n="5">
+        <div class="card reveal">
+          <h4>解析与校验 <span class="tag amber">防幻觉核心</span></h4>
+          <p>剥离 ```json 围栏 → Pydantic 严格校验（失败<b>带错误信息让模型重试一次</b>）→ 确定性校验器检查<b>真实性 / 闭馆日 / 动线距离 / 单日密度</b>；强问题自动带真实替代候选定向修复一次，遗留问题写入 warnings 展示。</p>
+        </div>
+      </div>
+      <div class="step" data-n="6">
+        <div class="card reveal">
+          <h4>图片增强 <span class="tag">数据增强而非工具</span></h4>
+          <p>三层策略：高德 POI 实景照片 → Unsplash 氛围图 → 前端渐变占位。所有外部请求过<b>进程级节拍器</b>统一限速，配 7 天缓存省配额。</p>
+        </div>
+      </div>
+      <div class="step" data-n="7">
+        <div class="card reveal">
+          <h4>入库与缓存 <span class="tag">优雅降级</span></h4>
+          <p>规划结果落 MySQL（自动入库，失败不影响本次返回）→ 完整结果（含图与 trip_id）写 Redis 结果缓存。</p>
+        </div>
+      </div>
+      <div class="step" data-n="8">
+        <div class="card reveal">
+          <h4>轮询渲染与后续交互 <span class="tag amber">产品闭环</span></h4>
+          <p>前端轮询 <b>GET /api/trip/jobs/{id}</b> 渲染时间线 / 地图 / 预算。后续闭环：手动编辑、收藏、<b>反馈重规划</b>（"约满了/没房了"→局部重规划+版本链）、<b>Plan B 一键对调</b>、导出 PDF / 长图 / iCal、每日真实驾车路线（折线+里程+打车费）。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3 智能体设计 ================= -->
+<section id="agents">
+  <div class="wrap">
+    <span class="kicker">Multi-Agent Design</span>
+    <h2>四个智能体的分工与协作</h2>
+    <p class="lead">
+      设计原则：<b>搜索与规划分离</b>——搜索型任务的工具调用轮次多、噪声大，混在一起会污染规划上下文；
+      Planner 不持任何工具，输入即上下文、输出即 JSON，行为完全可预测。
+    </p>
+
+    <div class="agents">
+      <div class="agent card reveal">
+        <span class="role">Agent ① · 工具型</span>
+        <h4>AttractionSearchAgent</h4>
+        <p>按用户偏好搜索目的地景点，整理成带坐标的候选清单（表格格式，便于 Planner 消费）。</p>
+        <div class="tools"><code>maps_text_search</code><code>maps_search_detail</code><code>maps_around_search</code></div>
+      </div>
+      <div class="agent card reveal">
+        <span class="role">Agent ② · 工具型</span>
+        <h4>WeatherQueryAgent</h4>
+        <p>查询目的地出发日期区间的天气预报，供 Planner 决定室内外搭配与着装提示。</p>
+        <div class="tools"><code>maps_weather</code></div>
+      </div>
+      <div class="agent card reveal">
+        <span class="role">Agent ③ · 工具型</span>
+        <h4>HotelAgent</h4>
+        <p>结合预算与出行类型搜索酒店候选，输出地址与坐标（供动线计算）。</p>
+        <div class="tools"><code>maps_text_search</code></div>
+      </div>
+      <div class="agent card zero reveal">
+        <span class="role">Agent ④ · 规划型</span>
+        <h4>PlannerAgent</h4>
+        <p><b>零工具</b>。消费前三步的结构化候选 + 用户需求，按 JSON Schema 输出完整行程。解析失败会带着校验错误重试一次。</p>
+        <div class="tools"><code>function calling: 无</code><code>输出: TripPlan JSON</code></div>
+      </div>
+    </div>
+
+    <div class="card agent-note reveal">
+      <span><b>共享基础设施</b>：三个工具型 Agent 复用<b>同一个 MCP 服务器子进程</b>（只启动一次），每个 Agent 持有一个带白名单的 MCPTool 视图。</span>
+      <span><b>最小权限</b>：白名单在「展开过滤」与「父工具入口」两处强制，防框架回退绕过。</span>
+      <span><b>确定性代码不走 LLM</b>：校验器 / 重规划候选搜索 / 地理编码经 client 句柄直连 MCP，显式指定工具名。</span>
+      <span><b>节奏统一</b>：LLM 驱动调用与确定性调用共享同一把高德 QPS 节拍器。</span>
+    </div>
+
+    <!-- ========== 底层实现深拆（面试核心） ========== -->
+    <div class="deep">
+
+      <!-- 深拆 1：调用栈 -->
+      <div class="reveal">
+        <h3><span class="dno">深拆 1</span> Agent 底层到底跑了什么：五层调用栈</h3>
+        <p class="ddesc">
+          面试时一句话先说结论：<b>"Agent 能力基于官方 openai Python SDK v1 的 Chat Completions 接口与原生 Function Calling 协议；
+          Agent 的'思考-调工具'循环和多智能体编排都是手写的普通 Python 代码，没有用 LangChain / LangGraph，也没有用官方 MCP SDK。"</b>
+          然后按下表自底向上展开。
+        </p>
+        <div class="stack">
+          <div class="stack-row soft">
+            <div class="lvl">L1 传输层<small>HTTPS</small></div>
+            <div class="imp">向 <code>{LLM_BASE_URL}/chat/completions</code> 发 POST（本项目指向 <code>https://api.deepseek.com</code>，DeepSeek 完全兼容 OpenAI 协议）</div>
+          </div>
+          <div class="stack-row soft">
+            <div class="lvl">L2 模型客户端<small>第三方库</small></div>
+            <div class="imp">官方 <code>openai</code> Python SDK v1.x：<code>OpenAI(api_key, base_url).chat.completions.create(model, messages, tools, ...)</code>；由框架间接依赖安装（<code>openai&gt;=1.0,&lt;2</code>）</div>
+          </div>
+          <div class="stack-row hl">
+            <div class="lvl">L3 工具协议<small>Function Calling</small></div>
+            <div class="imp">OpenAI 原生 Function Calling：<code>tools=[{type:function, function:{name, description, parameters(JSON Schema)}}]</code>；模型回 <code>message.tool_calls</code>；程序执行后以 <code>role="tool"</code> 消息回填结果</div>
+          </div>
+          <div class="stack-row hl">
+            <div class="lvl">L4 Agent 执行循环<small>手写 while</small></div>
+            <div class="imp"><code>SimpleAgent.run()</code>：拼消息 → 带 tools 调模型 → 有 tool_calls 就执行并回填、继续循环；无 tool_calls 就返回文本。<b>最多 3 轮工具迭代</b>（max_tool_iterations=3），本质是一个受控的 ReAct 循环</div>
+          </div>
+          <div class="stack-row">
+            <div class="lvl">L5 多 Agent 编排<small>顺序流水线</small></div>
+            <div class="imp"><code>TripPlannerAgent.plan()</code>：硬编码固定顺序——景点 Agent → 天气 Agent → 酒店 Agent → Planner Agent；Agent 之间不直接通信，中间结果是文本，由程序拼进下一个 prompt</div>
+          </div>
+          <div class="stack-row">
+            <div class="lvl">旁路：MCP 通道<small>手写 stdio 客户端</small></div>
+            <div class="imp"><code>subprocess</code> 启动 <code>npx -y @amap/amap-maps-mcp-server</code>，经 stdin/stdout 收发 JSON-RPC 2.0（initialize → tools/list → tools/call），MCP 工具的 inputSchema 被转成 L3 的 Function Calling schema</div>
+          </div>
+        </div>
+        <div class="quote" style="margin-top:12px;"><b>面试加分点：</b>能区分"框架名"和"底层协议"两层——hello-agents 只是薄薄一层 Agent 抽象，真正决定能力边界的是 <b>OpenAI Chat Completions + Function Calling 协议</b>，所以换任何兼容模型（DeepSeek/通义/Kimi）业务代码零改动。</div>
+      </div>
+
+      <!-- 深拆 2：消息流 -->
+      <div class="reveal">
+        <h3><span class="dno">深拆 2</span> 一次工具调用的完整消息流（Function Calling 全流程）</h3>
+        <p class="ddesc">以 AttractionSearchAgent 搜索景点为例，这是 L4 循环内部真实发生的消息往返，也是"Agent 为什么能自己调工具"的答案。</p>
+        <div class="msgflow">
+          <div class="msg sys">
+            <span class="role">system · 程序预置</span>
+            <pre>你是景点搜索专家，可使用以下工具：maps_text_search / maps_search_detail / maps_around_search。
+请把结果整理成带坐标的候选清单……</pre>
+          </div>
+          <div class="msg user">
+            <span class="role">user · 用户输入</span>
+            <pre>目的地：南京；用户需求：出行3天、偏好历史文化、预算3000元。请搜索并整理景点候选清单。</pre>
+          </div>
+          <div class="flow-arrow">↓ 程序把 system + user 连同 tools schema 一起发给模型</div>
+          <div class="msg assistant">
+            <span class="role">assistant · 模型第 1 次返回（不直接回答，而是请求调工具）</span>
+            <pre>content = null
+tool_calls = [{
+  id: "call_01",
+  function: { name: "maps_text_search",
+              arguments: '{"keywords":"南京 历史文化景点","city":"南京"}' }
+}]</pre>
+            <div class="arrow-hint">→ 程序识别到 tool_calls，不把它当最终答案，而是去执行工具</div>
+          </div>
+          <div class="msg tool">
+            <span class="role">tool · 程序执行 MCP 工具后回填（模型看不到执行过程，只拿到结果）</span>
+            <pre>tool_call_id: call_01
+{ "中山陵": {"lng":118.85,"lat":32.06,...}, "夫子庙": {...}, "总统府": {...}, ... }</pre>
+          </div>
+          <div class="flow-arrow">↓ 带着工具结果再次请求模型（可能再调 detail 工具，进入第 2 轮）</div>
+          <div class="msg assistant">
+            <span class="role">assistant · 模型第 2~3 轮</span>
+            <pre>tool_calls = [{ function: { name: "maps_search_detail", arguments: '{"id":"..."}' } }]
+……（工具结果回填）……</pre>
+          </div>
+          <div class="msg assistant">
+            <span class="role">assistant · 最终返回（纯文本、无 tool_calls，循环结束）</span>
+            <pre>| 景点 | 地址 | 经度 | 纬度 | 建议时长 |
+| 中山陵 | 玄武区石象路7号 | 118.85 | 32.06 | 3h |
+| 夫子庙 | 秦淮区贡院街 | 118.79 | 32.02 | 2h | ……</pre>
+          </div>
+        </div>
+        <div class="quote" style="margin-top:12px;"><b>关键理解：</b>模型本身<b>不会、也无法直接执行任何函数</b>——它只能输出"我想调用某工具"的结构化请求；真正的工具执行、结果回填、轮次控制全是 SDK 外层的 Python 代码完成的。所谓 Agent = <b>LLM + 在一个循环里反复执行它请求的工具</b>。</div>
+      </div>
+
+      <!-- 深拆 3：编排形态 -->
+      <div class="reveal">
+        <h3><span class="dno">深拆 3</span> 四个 Agent 如何协作：固定顺序流水线，而非自主对话</h3>
+        <p class="ddesc">很多教程里的多 Agent 是"几个 Agent 在群里自由聊天、互相分派任务"。本项目刻意没有那样做。</p>
+        <pre class="code"><span class="cm"># TripPlannerAgent.plan() 的真实形态（简化）</span>
+attractions_text = attraction_agent.run(<span class="fn">search_prompt</span>(request))   <span class="cm"># ① 顺序执行，阻塞等待</span>
+weather_text      = weather_agent.run(<span class="fn">weather_prompt</span>(request))      <span class="cm"># ② 用①的同一 request</span>
+hotel_text        = hotel_agent.run(<span class="fn">hotel_prompt</span>(request))        <span class="cm"># ③</span>
+planner_input     = <span class="fn">拼接</span>(request, attractions_text, weather_text, hotel_text)  <span class="cm"># 人工拼上下文</span>
+trip_json         = planner_agent.run(planner_input)               <span class="cm"># ④ 零工具整合</span></pre>
+        <table class="cmp" style="margin-top:14px;">
+          <tr><th style="width:150px;">要点</th><th>本项目的做法</th></tr>
+          <tr><td>控制流</td><td>由程序代码 <b>硬编码固定顺序</b>，每一步何时执行、执行几次完全确定</td></tr>
+          <tr><td>通信方式</td><td>Agent 之间<b>不直接对话</b>；上游输出是文本，由程序拼接进下游 prompt（相当于"人工传话"）</td></tr>
+          <tr><td>Planner 的输入</td><td>人为拼接的干净 Markdown（用户需求 + 三份候选），不含搜索过程的原始噪声</td></tr>
+          <tr><td>为什么这样设计</td><td>自主协商型多 Agent 不可控（可能死循环、互相甩锅、token 消耗不可预测）；<b>固定流水线每一步可预测、可测试、可单独重试</b>，更符合工程交付要求</td></tr>
+        </table>
+      </div>
+
+      <!-- 深拆 4：MCP 客户端 -->
+      <div class="reveal">
+        <h3><span class="dno">深拆 4</span> MCP 客户端是手写的：stdio + JSON-RPC 2.0</h3>
+        <p class="ddesc">没有使用官方 <code>mcp</code> Python SDK，而是按 MCP 规范用标准库实现了一个最小客户端（约 180 行）。</p>
+        <pre class="code"><span class="cm"># 三次握手式调用，全部走子进程的标准输入/输出</span>
+<span class="fn">initialize</span>(protocolVersion=<span class="kw">"2024-11-05"</span>, clientInfo=...)  <span class="cm"># 协商能力</span>
+tools = <span class="fn">tools/list</span>()                              <span class="cm"># 拿到 12 个工具的 name/description/inputSchema</span>
+result = <span class="fn">tools/call</span>(name=<span class="kw">"maps_text_search"</span>, arguments={...})
+
+<span class="cm"># 关键桥接：MCP inputSchema  →  Function Calling 的 parameters</span>
+<span class="cm"># 于是模型能"看见"高德工具并按正确参数发起调用</span></pre>
+        <table class="cmp" style="margin-top:14px;">
+          <tr><th style="width:170px;">工程细节</th><th>说明</th></tr>
+          <tr><td>消息格式</td><td>每行一个 JSON-RPC 2.0 帧：<code>{"jsonrpc":"2.0","id":N,"method":...}</code>，后台线程持续读 stdout，按 id 把响应放入 <code>_pending</code> 表</td></tr>
+          <tr><td>线程安全（双锁）</td><td><code>_io_lock</code> 把"写请求→等响应"整个周期串行化（否则并发线程会互相清掉响应）；<code>_lock</code> 只保护 id 计数与响应表</td></tr>
+          <tr><td>单例子进程</td><td>全进程只启动一个 npx MCP 子进程，三个 Agent 共享；模块导入时即创建初始化锁，防止并发首调建出两个子进程</td></tr>
+          <tr><td>确定性代码旁路</td><td>校验器/地理编码不经模型 function calling，直接拿 client 句柄显式调指定工具，省一次模型决策</td></tr>
+        </table>
+      </div>
+
+      <!-- 深拆 5：框架对比 -->
+      <div class="reveal">
+        <h3><span class="dno">深拆 5</span> 和 LangChain / LangGraph / CrewAI 的区别（面试高频追问）</h3>
+        <p class="ddesc">面试官问"为什么不用 LangChain/LangGraph"时，不要说"没学过"，要按抽象层次和场景回答。</p>
+        <table class="cmp">
+          <tr>
+            <th style="width:130px;">方案</th><th>编排模型</th><th>工具/循环</th><th>状态与持久化</th><th>适合场景</th>
+          </tr>
+          <tr>
+            <td>本项目<br><small>轻量抽象 + 手写循环</small></td>
+            <td>固定顺序流水线，硬编码在普通函数里</td>
+            <td>原生 Function Calling，手写 while（≤3 轮）</td>
+            <td>会话/结果存 MySQL+Redis，无框架状态机</td>
+            <td>流程固定、追求可控、想吃透底层原理</td>
+          </tr>
+          <tr>
+            <td>LangChain</td>
+            <td>Chain / LCEL 表达式组合，线性为主</td>
+            <td>大量 Tool 封装与 Agent 实现，集成生态最全</td>
+            <td>靠各模块自行组合，抽象层多、版本变动快</td>
+            <td>快速拼装、需要大量现成集成与文档</td>
+          </tr>
+          <tr>
+            <td>LangGraph</td>
+            <td><b>显式有向图 StateGraph</b>，原生支持循环/条件分支</td>
+            <td>图节点内调工具，ToolNode 标准化</td>
+            <td><b>Checkpointer 检查点</b>、时间旅行、断点续跑、人机协同中断</td>
+            <td>复杂循环、多分支、需要中断恢复的生产级 Agent</td>
+          </tr>
+          <tr>
+            <td>CrewAI / AutoGen</td>
+            <td>多 Agent <b>自主对话、角色分工协商</b></td>
+            <td>Agent 自主决定是否调用，控制流涌现</td>
+            <td>对话历史驱动，确定性较弱、token 成本高</td>
+            <td>开放式任务、探索性协作、难以预先固定流程</td>
+          </tr>
+        </table>
+        <div class="quote" style="margin-top:12px;"><b>标准回答话术：</b>"我的业务流程是<b>固定的四段式</b>，用 LangGraph 建图属于过度设计；用 CrewAI 的自主协商又会牺牲确定性。我选择在原生 Function Calling 上写最小循环，把编排逻辑留在自己可读可控的代码里。<b>但我清楚边界：一旦出现条件分支、循环重试或需要人工审批断点，我会迁移到 LangGraph 的 StateGraph + Checkpointer</b>——它解决的正是我现在硬编码的那部分问题。"</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ================= 4 工程亮点 ================= -->
+<section id="hl" style="background:var(--cream-2);">
+  <div class="wrap">
+    <span class="kicker">Engineering Highlights</span>
+    <h2>面试值得深挖的 12 个工程决策</h2>
+    <p class="lead">
+      按四个维度组织。每张卡片附一句<b>面试话术</b>——不是让你背，而是提炼"这东西体现了什么能力"。
+    </p>
+
+    <div class="group">
+      <h3><span class="gno">A</span>可靠性架构</h3>
+      <p class="desc">长耗时 AI 任务的工程化承载：任务解耦、并发治理、故障降级。</p>
+      <div class="hl-grid">
+        <div class="hl-card card reveal">
+          <h4>1 · 长任务异步化：Job 提交 + 轮询 + 自动降级</h4>
+          <p>LLM 流水线 30–90s，不能挂在 HTTP 请求生命周期里。HTTP 只受理与查询，执行进后台线程池，状态机（pending/running/succeeded/failed）写 Redis 存 24h。<b>关页面、刷新、换设备都能取回结果</b>；Redis 不可用自动退回同步模式，旧体验无损。</p>
+          <div class="quote"><b>话术：</b>"AI 生成类产品第一课就是把任务从请求生命周期里解耦出来——HTTP 负责受理，状态外置，客户端断开不影响执行。"</div>
+        </div>
+        <div class="hl-card card reveal">
+          <h4>2 · 并发控制三件套：闸门 / 锁 / 缓存</h4>
+          <p><b>Semaphore(2) 闸门</b>：只有 2 个流水线 worker，第 3 个请求快速失败 429 而不是排队到 axios 120s 超时；<b>规划锁</b>：Redis SETNX + 所有权 Token + Lua 原子比对释放——防止 A 的锁超时过期被 B 拿走后，A 的 finally 误删 B 的锁；<b>结果缓存</b>：请求指纹 24h 复用，空日期归一化保证缓存正确性。</p>
+          <div class="quote"><b>话术：</b>"闸门管总量、锁管去重、缓存管复用，三种手段各管一件事，不混用。"</div>
+        </div>
+        <div class="hl-card card reveal">
+          <h4>3 · 全链路降级与 10 秒熔断静默期</h4>
+          <p>MySQL / Redis 双库独立探测、独立降级：Redis 挂 → 缓存退进程内存；MySQL 挂 → 规划照常、历史功能提示暂不可用。关键设计：<b>探测失败后进入 10s 静默期快速失败</b>——否则 Redis 宕机时每个请求都要等 1.5s 探测超时，4 个 IO worker 会被限流中间件的每请求检查全部占满，一次缓存故障被放大成全站卡死。</p>
+          <div class="quote"><b>话术：</b>"降级不是到处 try/except，是识别并切断故障放大路径——这是我专门修过的一个全站卡死问题。"</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3><span class="gno">B</span>AI 工程化</h3>
+      <p class="desc">LLM 不可信怎么办：用确定性代码兜住生成质量，用流程设计补数据缺口。</p>
+      <div class="hl-grid">
+        <div class="hl-card card reveal">
+          <h4>4 · 混合校验防幻觉：确定性规则，0 LLM 成本</h4>
+          <p>Planner 输出后跑确定性校验器：<b>真实性</b>——POI 在高德核实到但坐标偏差 &gt;1.5km（haversine 纯计算）判疑似编造；<b>闭馆日</b>——逐景点查真实营业时间，按每一天自己的日期判断星期冲突；<b>动线</b>——同日相邻景点驾车 &gt;15km；<b>密度</b>——单日 &gt;3 个。全部不耗 LLM，配 7 天缓存。</p>
+          <div class="quote"><b>话术：</b>"防幻觉不靠提示词求模型，靠生成后的确定性核验——能用代码判断的绝不问模型。"</div>
+        </div>
+        <div class="hl-card card reveal">
+          <h4>5 · 带约束的定向修复：候选坐标原样注入</h4>
+          <p>发现强问题后，先用 <code>maps_around_search</code> 搜出<b>真实周边替代候选</b>（名称/地址/坐标来自真实 POI），注入修复提示词并要求"坐标原样使用、禁止编造"，Planner 只做一次定向修复；仍不达标则进 warnings 透明展示。<b>直线距离预筛省配额</b>：驾车距离 ≥ 直线距离，直线 &gt;15km 必超标、&lt;8km 必达标，只对中间地带调 API。</p>
+          <div class="quote"><b>话术：</b>"让模型改错时给它真实素材，而不是让它凭记忆重编——修复的输入决定了幻觉的下限。"</div>
+        </div>
+        <div class="hl-card card reveal">
+          <h4>6 · 局部重规划：只重写受影响的天</h4>
+          <p>用户反馈"约满了/没房了"→ 自动检测影响的日期（酒店反馈影响全部天）→ LLM 只重写这些天 → <b>后端确定性合并回原计划</b>，未受影响的天逐字保留——更快、更稳、不误伤满意安排。新版本 parent_id 挂版本链可回看。实时房态个人 Key 拿不到，用"用户反馈 → 约束重规划"的<b>流程方案</b>补位。</p>
+          <div class="quote"><b>话术：</b>"数据不可得时，用流程设计补产品能力——这是一个工程判断，不是技术炫技。"</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3><span class="gno">C</span>协议与外部依赖治理</h3>
+      <p class="desc">框架没有的东西自己造，三方限制主动治理。</p>
+      <div class="hl-grid">
+        <div class="hl-card card reveal">
+          <h4>7 · 手写 MCP stdio 客户端，桥接到 Function Calling</h4>
+          <p>所用框架未内置 MCPTool，按 MCP 规范自实现：<b>子进程启动官方高德 MCP 服务器</b>，stdin/stdout 收发 JSON-RPC 2.0（initialize → tools/list → tools/call），auto_expand 把 MCP 工具自动展开为框架原生 Tool 走 function calling，参数 schema 直接取自 MCP inputSchema。多线程共享单连接时，<b>写请求与等响应在同一临界区</b>，防止响应被并发请求清掉。</p>
+          <div class="quote"><b>话术：</b>"读协议规范、手写协议客户端，并想清楚多线程共享连接时的消息交错问题。"</div>
+        </div>
+        <div class="hl-card card reveal">
+          <h4>8 · 最小权限：工具白名单的两处强制</h4>
+          <p>每个工具型 Agent 只暴露白名单内的 MCP 工具（景点 3 个、天气 1 个、酒店 1 个）。白名单在<b>展开时过滤</b>与<b>父工具 run 入口拦截</b>两处强制——因为框架在展开失败时会退回注册父工具，父工具可透传任意 MCP 工具名。白名单含服务器不存在的工具名时显式告警，防拼写错误静默失效。</p>
+          <div class="quote"><b>话术：</b>"Agent 的行为面要收窄：模型不该有的能力，就不该出现在它的工具列表里。"</div>
+        </div>
+        <div class="hl-card card reveal">
+          <h4>9 · 全局节拍器 + 三层图片管线 + 安全代理</h4>
+          <p><b>节拍器</b>：Agent 经 MCP 的调用、校验器、图片服务共享同一高德 Key 的 QPS，进程级 pace() 在锁内睡眠、全局串行，相邻调用起始间隔 ≥0.35s，比"调用后固定 sleep"省 N 次尾部等待。<b>图片</b>：高德实景 → Unsplash → 占位图三级降级；同源代理解决防盗链/混合内容/导出跨域污染——域名白名单、<b>逐跳重定向复查</b>（防白名单域 302 到内网）、魔数嗅探真实类型、未知图床直接 400 不做开放重定向。</p>
+          <div class="quote"><b>话术：</b>"共享配额的调用方要共享同一个节拍器；做一个图片代理顺手就要堵住开放重定向。"</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3><span class="gno">D</span>安全与质量保障</h3>
+      <p class="desc">鉴权、限流的细节设计，以及一套不打真实 API 的测试体系。</p>
+      <div class="hl-grid">
+        <div class="hl-card card reveal">
+          <h4>10 · 三形态鉴权与多用户隔离</h4>
+          <p><code>AUTH_MODE</code> 三态互斥：none（本地演示）/ 访问码 / 多用户（注册登录 PBKDF2 + Redis 会话 7 天）。行程按用户隔离：<b>示例作品与无主历史全员可读、仅本人可改删</b>；异步 Job 绑定 user_id，<b>仅本人可查</b>。开启鉴权时同时关闭公开 API 文档。</p>
+          <div class="quote"><b>话术：</b>"鉴权不是加个中间件就完了——每个新端点（包括轮询）都要回答'谁能看'。"</div>
+        </div>
+        <div class="hl-card card reveal">
+          <h4>11 · 限流与中间件顺序的细节</h4>
+          <p>固定窗口计数用 <b>Lua 脚本原子 INCR + 首次 EXPIRE</b>，fail-open（Redis 挂不限流保可用）；<b>401 也计入限流配额</b>，天然抑制暴力枚举；注册/登录独立 10 次/分/IP。中间件注册顺序 = 后注册者在外层：鉴权最内、限流中、<b>CORS 最外——保证 429/401 响应也带跨域头，浏览器才能读到错误信息</b>。</p>
+          <div class="quote"><b>话术：</b>"429 响应没跨域头，前端拿到的是 opaque error——这类问题逼你理解中间件洋葱模型的真实执行顺序。"</div>
+        </div>
+        <div class="hl-card card reveal">
+          <h4>12 · 43 个测试用例 + 服务容器 CI</h4>
+          <p>覆盖：请求边界、校验器规则（<b>FakeClient 不打真实 API</b>）、MCP 白名单两处强制、三形态鉴权、限流（栈构建后注入确定性 FakeCache，结果可复现）、规划锁与存储语义；需真实 Redis 的用例不可用时自动 skip。CI 双并行任务：后端拉起 <b>MySQL 8.4 + Redis 7 服务容器</b>（健康检查通过才跑）<b>全量无 skip</b>；前端 vue-tsc 类型检查 + 构建 + vitest。</p>
+          <div class="quote"><b>话术：</b>"测试不依赖真实三方 API，但 CI 里用真实 MySQL/Redis 把降级路径也测满——skip 归零。"</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 5 踩坑实录 ================= -->
+<section id="pit">
+  <div class="wrap">
+    <span class="kicker">War Stories</span>
+    <h2>踩坑实录：现象 → 根因 → 解法</h2>
+    <p class="lead">面试最爱问"遇到过什么难的问题"。以下每条都有完整的排查故事可讲。</p>
+
+    <div class="pits">
+      <div class="pit card reveal">
+        <h4>1 · redis-py 8 连不上本地 Redis 5</h4>
+        <dl>
+          <dt>现象</dt><dd>连接报 <code>unknown command 'HELLO'</code>。</dd>
+          <dt>根因</dt><dd>redis-py 8 默认 RESP3 握手发 HELLO，Redis &lt;6.0 不支持。</dd>
+          <dt>解法</dt><dd>客户端强制 <code>protocol=2</code>（RESP2），并在 README 记录环境约束。</dd>
+        </dl>
+      </div>
+      <div class="pit card reveal">
+        <h4>2 · 高德并发调用触发限流</h4>
+        <dl>
+          <dt>现象</dt><dd>批量查 POI 时报 <code>CUQPS_HAS_EXCEEDED_THE_LIMIT</code>。</dd>
+          <dt>根因</dt><dd>个人 Key 约 3 QPS，Agent / 校验器 / 图片服务各自调用会叠加超限。</dd>
+          <dt>解法</dt><dd>进程级全局节拍器：锁内睡眠保证相邻调用起始间隔 ≥0.35s，所有调用方共用一把计拍。</dd>
+        </dl>
+      </div>
+      <div class="pit card reveal">
+        <h4>3 · MCP 共享连接的响应丢失</h4>
+        <dl>
+          <dt>现象</dt><dd>多 Agent 并发时偶发请求等待超时。</dd>
+          <dt>根因</dt><dd>两个线程交错发起请求时，先到者的响应可能被后到者的 <code>_pending.clear()</code> 清掉。</dd>
+          <dt>解法</dt><dd>「写请求 → 收响应」整个周期持请求级互斥锁；另一把锁只保护 id 计数与响应表。</dd>
+        </dl>
+      </div>
+      <div class="pit card reveal">
+        <h4>4 · 惰性单例建出两个 MCP 子进程</h4>
+        <dl>
+          <dt>现象</dt><dd>并发首调时偶现子进程泄漏。</dd>
+          <dt>根因</dt><dd>锁在惰性初始化时才创建——两个线程可能各拿一把新锁同时通过判断。</dd>
+          <dt>解法</dt><dd>锁提升为模块导入时创建 + 双重检查；代码里写明注释防回归。</dd>
+        </dl>
+      </div>
+      <div class="pit card reveal">
+        <h4>5 · Redis 宕机放大成全站卡死</h4>
+        <dl>
+          <dt>现象</dt><dd>Redis 掉线后整站所有请求变慢直至不可用。</dd>
+          <dt>根因</dt><dd>限流中间件每请求探测，1.5s 超时 × 每请求，4 个 IO worker 被占满。</dd>
+          <dt>解法</dt><dd>探测失败进入 10s 熔断静默期：期间直接快速失败并走降级，不碰 socket。</dd>
+        </dl>
+      </div>
+      <div class="pit card reveal">
+        <h4>6 · 空日期请求命中过期缓存</h4>
+        <dl>
+          <dt>现象</dt><dd>不带出发日期的请求，第二天返回的还是昨天的天气。</dd>
+          <dt>根因</dt><dd>start_date 为空时序列化指纹不含日期，今天和明天哈希相同。</dd>
+          <dt>解法</dt><dd>计算指纹前把空 start_date 归一化为"今天"再哈希。</dd>
+        </dl>
+      </div>
+      <div class="pit card reveal">
+        <h4>7 · 高德图床三连坑：防盗链 / 混合内容 / 假类型</h4>
+        <dl>
+          <dt>现象</dt><dd>图片挂、https 页面拦 http 图、部分 CDN 标 octet-stream。</dd>
+          <dt>根因</dt><dd>图床混杂（autonavi/amap/alicdn），各 CDN 行为不一致。</dd>
+          <dt>解法</dt><dd>同源代理：白名单域 + 逐跳重定向复查 + 魔数识别真实类型 + 磁盘缓存 + http→https 升级。</dd>
+        </dl>
+      </div>
+      <div class="pit card reveal">
+        <h4>8 · 导出 PDF 丢图 / 地图渲染冲突</h4>
+        <dl>
+          <dt>现象</dt><dd>html2canvas 截图丢图；带地图导出渲染异常。</dd>
+          <dt>根因</dt><dd>跨域图片污染 Canvas；地图 Canvas 与 html2canvas 兼容性差。</dd>
+          <dt>解法</dt><dd>图片全部走同源代理（useCORS 可生效）；导出时隐藏地图组件，与社区已知结论一致。</dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 6 面试问答 ================= -->
+<section id="qa" style="background:var(--cream-2);">
+  <div class="wrap">
+    <span class="kicker">Interview Script</span>
+    <h2>电梯陈述与高频追问</h2>
+    <p class="lead">
+      建议的讲述节奏：先用 30 秒讲清产品与架构全貌 → 让面试官选感兴趣的方向 →
+      从下面的亮点/踩坑里挑对应的两三个深挖。主动权在你手里。
+    </p>
+
+    <div class="pitch reveal">
+      <h3>30 秒版本</h3>
+      <p>
+        "我独立完成了一个多智能体旅行规划应用，底层基于官方 openai SDK 的 Function Calling，没有用 LangChain/LangGraph：
+        四个 Agent 里，三个工具型 Agent 经我手写的 MCP stdio 客户端调用高德地图 12 个真实工具搜景点、天气、酒店，一个零工具的 Planner 按固定顺序流水线整合，输出结构化行程。
+        因为 LLM 输出不可信，我设计了一套确定性校验器做生成后核验——真实性、闭馆日、动线距离、行程密度四类规则零 LLM 成本，
+        发现问题就带着真实替代候选让模型定向修复。工程侧把长任务异步化、双库存储带全链路降级、全局 QPS 节拍器治理第三方限流，
+        配了 43 个不打真实 API 的测试用例和真实 MySQL/Redis 服务容器的 CI。整个项目大概 3700 行后端核心代码，从 MCP 协议客户端到 Agent 循环、鉴权限流都是自己写的。"
+      </p>
+    </div>
+
+    <div class="qa">
+      <details>
+        <summary>你的 Agent 底层到底用了什么框架？是 LangChain / LangGraph 吗？</summary>
+        <div class="a">
+          都不是。自底向上：传输是 HTTPS 调 <b>OpenAI 兼容的 /chat/completions</b>（实际接 DeepSeek）；客户端是官方 <b>openai Python SDK v1</b>；工具能力用 SDK 的原生 <b>Function Calling</b>；Agent 的"调工具→拿结果→再思考"循环是 <code>SimpleAgent.run()</code> 里手写的 while 循环（最多 3 轮）；四个 Agent 的协作是 <code>plan()</code> 里硬编码的固定顺序流水线。外层用的 hello-agents 只是《Hello Agents》一书的薄教学抽象，真正的能力边界由 Chat Completions + Function Calling 协议决定。<b>没用 LangChain 是因为流程固定、不需要它的链式抽象与庞大集成；没用 LangGraph 是因为没有条件分支/循环/检查点需求，建图是过度设计</b>——但出现这些需求时我会迁移到 LangGraph。
+        </div>
+      </details>
+      <details>
+        <summary>Function Calling 的完整流程是什么？模型是怎么"调用"函数的？</summary>
+        <div class="a">
+          要先纠正一个常见误解：<b>模型本身不能执行任何函数</b>。流程是：① 程序请求时在 <code>tools</code> 参数里给模型一份工具清单（名称、描述、参数 JSON Schema）；② 模型若判断需要工具，返回的不是普通文本，而是结构化的 <code>tool_calls</code>（函数名 + 参数字符串）；③ 程序（不是模型）在本地执行真正的函数——这里是经 MCP 调高德工具；④ 把执行结果以 <code>role="tool"</code> 的消息追加到消息列表再次请求；⑤ 模型基于结果继续，要么再发 tool_calls 进入下一轮，要么输出无 tool_calls 的最终文本，循环结束。<b>Agent 本质 = LLM 外套一个"反复执行它请求的工具"的循环</b>，循环次数、工具执行、超时控制都是普通代码。
+        </div>
+      </details>
+      <details>
+        <summary>多个 Agent 之间是怎么通信的？</summary>
+        <div class="a">
+          它们<b>不直接通信、也不互相对话</b>。编排器 <code>TripPlannerAgent</code> 按固定顺序调用每个 Agent，拿到的是文本形式的中间结果（景点候选表、天气文本、酒店候选表），再由程序把这些文本和用户需求拼接成 Planner 的输入。这是一种<b>"中心化编排 + 黑板式传参"</b>：上游产出写进同一块上下文，下游只读这块上下文。好处是没有 Agent 间的对话噪声与不可控的 token 消耗，每一步输入输出都可单独测试和重试；代价是流程变更要改编排代码——对本项目固定的四段流程不是问题。
+        </div>
+      </details>
+      <details>
+        <summary>为什么用 MCP，而不是直接调高德 REST API？</summary>
+        <div class="a">
+          三个理由：① <b>工具自描述</b>——MCP 的 tools/list 直接返回工具名、描述与参数 JSON Schema，auto_expand 后就能走 function calling，接入新 MCP 服务器不需要改 Agent 代码；② <b>协议标准化</b>——工具生态正在向 MCP 收敛，这是对方向的押注；③ 但我也保留了<b>务实的一面</b>：确定性代码（校验器、地理编码）不走 LLM 的 function calling，直接拿 client 句柄显式调工具，省掉一次模型决策的成本与不确定性。
+        </div>
+      </details>
+      <details>
+        <summary>为什么拆四个 Agent，一个 Agent 全干不行吗？</summary>
+        <div class="a">
+          核心是<b>上下文隔离</b>。搜索型任务工具调用轮次多，中间结果（POI 列表、原始 JSON）噪声很大；如果让一个 Agent 边搜边规划，搜索噪声会污染规划上下文，输出 JSON 的稳定性也差。拆开后：三个搜索 Agent 各自的小上下文里专心调工具，Planner 的输入是<b>人为拼接的干净结构化上下文</b>，且它零工具——行为完全可预测，输出的 JSON 解析失败率显著更低。另外每个 Agent 的工具白名单不同，这也是最小权限的自然实现。
+        </div>
+      </details>
+      <details>
+        <summary>怎么防 LLM 编造景点和坐标？</summary>
+        <div class="a">
+          四道防线：① <b>提示词约束</b>——要求只输出 JSON、禁止编造；② <b>结构校验</b>——Pydantic 强类型模型，失败带错误信息重试一次；③ <b>确定性核验</b>——POI 在高德核实不到仅弱提醒，核实到但坐标偏差 &gt;1.5km 判疑似编造（强问题，haversine 纯计算零配额）；④ <b>修复注入真实素材</b>——把周边搜索的真实 POI 候选连名称带坐标喂给模型，要求原样使用。LLM 只在"给真实素材做选择与编排"，不负责"从无到有编造事实"。
+        </div>
+      </details>
+      <details>
+        <summary>异步任务为什么用 Redis 存状态，不用 Celery / 消息队列？</summary>
+        <div class="a">
+          取舍于<b>部署形态</b>：这是单机单进程应用（README 里显式声明了这个约束），Celery 会引入 worker 拓扑、broker 运维、序列化与监控一整套成本，收益不成比例。我用 Redis KV 存任务状态机 + 线程池执行，40 行代码解决问题，且 job 语义（提交/查询/状态机/TTL）已经抽象出来——将来量上去了，把执行器换掉、状态换 broker，接口不用动。同时设计了降级：Redis 不可用自动退同步模式。
+        </div>
+      </details>
+      <details>
+        <summary>单进程是有意的吗？流量涨了怎么演进？</summary>
+        <div class="a">
+          是有意取舍并<b>诚实声明</b>的：MySQL 单连接、单个 MCP 子进程、进程内缓存、并发闸门都建立在单进程假设上，多 worker 会破坏正确性，所以 README 明确要求 --workers 1。演进路径我想过：MySQL 换连接池、MCP 客户端池化或换长连接服务、进程内缓存全部收敛到 Redis、节拍器换分布式令牌桶、Job 执行器换独立 worker + broker、图片代理上 CDN 与对象存储。关键是每一步改哪一层我都清楚，因为降级边界是按层画的。
+        </div>
+      </details>
+      <details>
+        <summary>这个项目里你觉得最有价值的一个设计？</summary>
+        <div class="a">
+          <b>混合校验 + 带约束定向修复</b>这一对组合。它回答了 AI 应用最核心的问题："模型输出不可信时，产品怎么保证质量"。我的答案是：把"判断"留给确定性代码（便宜、可靠、可测试），把"生成"留给模型，但生成时的素材必须来自真实数据源。落地效果是幻觉坐标被系统性拦截、修复只花一次 LLM 调用、遗留问题透明展示给用户而不是默默吞掉。这个思路可以平移到任何"生成结构化事实"的 AI 应用。
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>智能旅行助手 · 面试复盘页 · 更新于 2026-10-08 · 内容与 main 分支代码及 hello-agents 1.0.0 源码逐一核对</span>
+    <span>技术栈：FastAPI · openai SDK v1 / Function Calling · 手写 MCP stdio 客户端 · Vue 3 · MySQL · Redis · GitHub Actions</span>
+  </div>
+</footer>
+
+<script>
+  // 滚动渐入
+  const io = new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+  }, { threshold: 0.08 });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+  // 导航高亮当前分区
+  const links = [...document.querySelectorAll('nav.toc a')];
+  const sections = links.map(a => document.querySelector(a.getAttribute('href')));
+  const nio = new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) {
+      links.forEach(l => l.style.background = '');
+      const i = sections.indexOf(e.target);
+      if (i > -1) links[i].style.background = 'var(--forest-soft)';
+    }
+  }, { rootMargin: '-40% 0px -55% 0px' });
+  sections.forEach(s => s && nio.observe(s));
+</script>
+</body>
+</html>

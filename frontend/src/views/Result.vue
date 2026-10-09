@@ -207,7 +207,7 @@ function drawRoutes() {
 const sections = [
   { id: 'sec-overview', name: '行程概览' },
   { id: 'sec-days', name: '每日安排' },
-  { id: 'sec-budget', name: '费用预算' },
+  { id: 'sec-budget', name: '费用估算' },
   { id: 'sec-map', name: '地图总览' },
   { id: 'sec-tips', name: '实用贴士' },
 ]
@@ -610,6 +610,7 @@ onBeforeUnmount(() => {
                         <span class="attr-name">{{ attr.name }}</span>
                         <a-tag v-if="attr.ticket_price > 0" color="orange">门票 {{ money(attr.ticket_price) }}</a-tag>
                         <a-tag v-else color="green">免费</a-tag>
+                        <a-tag v-if="attr.start_time && attr.end_time" color="blue">{{ attr.start_time }}–{{ attr.end_time }}</a-tag>
                         <a-tag><AppIcon name="clock" :size="11" color="#67756d" /> {{ attr.duration }}</a-tag>
                         <AmapNavButton :name="attr.name" :location="attr.location" :city="tripPlan.destination" />
                         <a-dropdown v-if="tripId && !editing" class="no-export">
@@ -748,36 +749,37 @@ onBeforeUnmount(() => {
 
         <!-- 费用预算：Bento 统计卡 -->
         <section id="sec-budget" class="sec">
-          <p class="eyebrow">BUDGET</p>
-          <h2 class="sec-title">费用预算</h2>
+          <p class="eyebrow">ESTIMATED COST</p>
+          <h2 class="sec-title">费用估算</h2>
           <div v-if="tripPlan.budget" class="budget-grid">
             <div class="b-item">
               <span class="b-ico"><AppIcon name="ticket" :size="18" color="#275c45" /></span>
-              <span class="b-label">门票</span>
+              <span class="b-label">门票（估算）</span>
               <span class="b-value">{{ money(tripPlan.budget.attraction_total) }}</span>
             </div>
             <div class="b-item">
               <span class="b-ico"><AppIcon name="hotel" :size="18" color="#275c45" /></span>
-              <span class="b-label">住宿</span>
+              <span class="b-label">住宿（估算）</span>
               <span class="b-value">{{ money(tripPlan.budget.hotel_total) }}</span>
             </div>
             <div class="b-item">
               <span class="b-ico"><AppIcon name="utensils" :size="18" color="#275c45" /></span>
-              <span class="b-label">餐饮</span>
+              <span class="b-label">餐饮（估算）</span>
               <span class="b-value">{{ money(tripPlan.budget.meal_total) }}</span>
             </div>
             <div class="b-item">
               <span class="b-ico"><AppIcon name="car" :size="18" color="#275c45" /></span>
-              <span class="b-label">市内交通</span>
+              <span class="b-label">市内交通（路线估价）</span>
               <span class="b-value">{{ money(tripPlan.budget.transport_total) }}</span>
             </div>
             <div class="b-item b-total">
-              <span class="b-label">预算总计</span>
+              <span class="b-label">估算总计</span>
               <span class="b-value">{{ money(tripPlan.budget.grand_total) }}</span>
               <span class="b-note">含门票 / 住宿 / 餐饮 / 市内交通</span>
             </div>
           </div>
-          <p v-else class="muted">暂无预算信息</p>
+          <p v-if="tripPlan.budget_note" class="budget-note">{{ tripPlan.budget_note }}</p>
+          <p v-else-if="!tripPlan.budget" class="muted">暂无预算信息</p>
         </section>
 
         <!-- 地图总览：导出时隐藏（地图 Canvas 与 html2canvas 存在兼容性问题） -->
@@ -1556,6 +1558,12 @@ onBeforeUnmount(() => {
 .b-note {
   font-size: 11.5px;
   color: rgba(255, 255, 255, 0.55);
+}
+
+.budget-note {
+  margin: 12px 2px 0;
+  font-size: 12.5px;
+  color: var(--ink-400);
 }
 
 /* ---------- 地图 ---------- */

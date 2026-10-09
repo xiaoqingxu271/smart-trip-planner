@@ -34,6 +34,10 @@ class Attraction(BaseModel):
     ticket_price: float = Field(0, ge=0, description="门票价格（元），免费为 0")
     recommended_reason: Annotated[str, StringConstraints(max_length=200)] = Field("", description="推荐理由")
     image_url: Optional[UrlText] = Field(None, description="景点配图（Unsplash）")
+    # 钟点由规划后的确定性调度器（schedule_service）填写，Planner 不编造钟点
+    start_time: str = Field("", description="开始时间 HH:MM，如 14:30；历史行程可能为空")
+    end_time: str = Field("", description="结束时间 HH:MM")
+    open_time_text: str = Field("", description="高德开放时间原文（展示用）")
 
 
 class Meal(BaseModel):
@@ -44,8 +48,8 @@ class Meal(BaseModel):
     specialty: Annotated[str, StringConstraints(max_length=100)] = Field("", description="推荐菜品")
     cost: float = Field(0, ge=0, description="人均消费（元）")
     image_url: Optional[UrlText] = Field(None, description="餐厅配图")
-    # Planner 不产出餐厅坐标；由图片增强服务搜 POI 图时顺带富化（前端导航用）
-    location: Optional[Location] = Field(None, description="经纬度坐标（图片增强时富化）")
+    # 批次 2.1 起：午餐/晚餐坐标由 Planner 从候选餐厅清单产出（导航必需）；早餐可空
+    location: Optional[Location] = Field(None, description="经纬度坐标（早餐可为空）")
 
 
 class Hotel(BaseModel):
@@ -125,6 +129,22 @@ class TripRequest(BaseModel):
     )
     group_type: str = Field("", max_length=20, description="出行类型：独自/情侣/家庭/朋友")
     notes: str = Field("", max_length=500, description="其他特殊要求")
+    # 首末日程（批次 1.1）：留空视为「全天可玩」，向后兼容旧请求
+    arrival_slot: Literal["morning", "afternoon", "evening", ""] = Field("", description="首日抵达时段")
+    departure_slot: Literal["morning", "afternoon", "evening", ""] = Field("", description="末日离开时段")
+    # 节奏（批次 3.2）：直接决定每天景点上限与相邻动线阈值
+    pace: Literal["easy", "standard", "packed"] = Field("standard", description="行程节奏")
+    # 必去 / 不去硬约束（批次 3.1）
+    must_see: list[Annotated[str, StringConstraints(max_length=40)]] = Field(
+        default_factory=list, max_length=5, description="必须包含的地点（最多 5 个）"
+    )
+    avoid: list[Annotated[str, StringConstraints(max_length=40)]] = Field(
+        default_factory=list, max_length=5, description="排除的地点（最多 5 个）"
+    )
+    # 市内交通方式（批次 3.4）
+    transit_mode: Literal["walk", "transit", "taxi", "drive"] = Field("taxi", description="市内交通方式")
+    # 出发城市（批次 3.5，可选）：只用于生成大交通提示，不调票务 API
+    origin: str = Field("", max_length=50, description="出发城市（可选）")
 
 
 class TripPlan(BaseModel):
@@ -136,6 +156,10 @@ class TripPlan(BaseModel):
     budget: Optional[Budget] = Field(None, description="预算明细")
     tips: list[Annotated[str, StringConstraints(max_length=200)]] = Field(
         default_factory=list, max_length=20, description="实用贴士"
+    )
+    # 预算口径说明（批次 1.4）：页面与 PDF 共用，标明门票/住宿/餐饮为估算、交通为路线估价
+    budget_note: str = Field(
+        "门票/住宿/餐饮为模型估算，交通为高德打车估价", description="预算说明（估算口径）"
     )
     demo: bool = Field(False, description="是否为演示模式数据")
     trip_id: Optional[int] = Field(None, description="入库后的行程 ID（真实模式自动保存）")

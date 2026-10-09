@@ -1,14 +1,15 @@
 """TripPlannerAgent：多 Agent 协作的行程规划流水线。
 
-协作流程（与书中一致，五步）：
-1. AttractionSearchAgent 调用 MCP 工具搜索景点
-2. WeatherQueryAgent 查询目的地天气
-3. HotelAgent 搜索候选酒店
-4. 将用户需求与前三步结果拼接，构建 PlannerAgent 的输入
-5. 解析 Planner 输出的 JSON，经 Pydantic 校验生成 TripPlan
+协作流程（批次 2 起改为有数据依赖的流水线）：
+1. AttractionSearchAgent 调用 MCP 工具搜索景点候选
+2. 围绕景点候选质心确定性 around_search 酒店（先景点后酒店）
+3. WeatherQueryAgent 查询目的地天气
+4. 围绕按天聚类的景点簇确定性 around_search 正餐候选
+5. 将用户需求与以上候选拼接，构建 PlannerAgent 的输入，解析输出 JSON 生成 TripPlan
 
-三个工具型 Agent 各持有一个带工具白名单的 MCPTool 包装（最小权限视图），
-共享同一个 MCP 服务器子进程。
+确定性搜索（酒店/餐饮）由编排器直连 self.mcp_tool.client，不额外消耗 LLM；
+HotelAgent 仅在无法解析到景点坐标时作为兜底。三个工具型 Agent 各持有一个带
+工具白名单的 MCPTool 包装（最小权限视图），共享同一个 MCP 服务器子进程。
 """
 from __future__ import annotations
 
@@ -24,6 +25,8 @@ from pydantic import ValidationError
 
 from ..config import Settings
 from ..models.schemas import DayPlan, Feedback, TripPlan, TripRequest
+from ..services.amap_pacer import pace
+from ..services.geo import centroid, cluster_centroids
 from ..storage.cache import Cache
 from .mcp_tool import MCPStdioClient, MCPTool
 from .prompts import (
@@ -38,6 +41,11 @@ logger = logging.getLogger(__name__)
 
 # 进度回调：progress(stage, message, extra)。stage 取值见 plan() 内的各 notify 调用。
 ProgressCallback = Callable[[str, str, dict | None], None]
+
+# 请求字段 → 中文文案（批次 1.1/3.2/3.4）
+_SLOT_LABEL = {"morning": "上午", "afternoon": "下午", "evening": "傍晚"}
+_PACE_LABEL = {"easy": "轻松（每天最多 2 个景点）", "standard": "标准（每天最多 3 个景点）", "packed": "紧凑（每天最多 4 个景点）"}
+_TRANSIT_LABEL = {"walk": "步行", "transit": "公交/地铁", "taxi": "打车", "drive": "自驾"}
 
 
 class PlannerError(Exception):
@@ -145,7 +153,25 @@ class TripPlannerAgent:
         n_candidates = sum(1 for line in attractions_text.splitlines() if line.count("|") >= 4)
         notify("attractions", f"景点搜索完成，共 {n_candidates} 个候选", {"count": n_candidates})
 
-        logger.info("[TripPlanner] ② 查询天气")
+        # ② 酒店：围绕景点候选质心 around_search（确定性），先景点后酒店（批次 2.2）
+        coords = self._parse_candidate_coords(attractions_text)
+        center = centroid(coords)
+        logger.info("[TripPlanner] ② 酒店搜索（景点簇质心=%s）", center or "未知")
+        if center:
+            hotel_text = self._hotel_candidates(center)
+            if not hotel_text:
+                hotel_text = self._run_step(
+                    self.hotel_agent,
+                    f"目的地：{request.destination}\n用户需求：{user_brief}\n请搜索并整理酒店候选清单。",
+                )
+        else:
+            hotel_text = self._run_step(
+                self.hotel_agent,
+                f"目的地：{request.destination}\n用户需求：{user_brief}\n请搜索并整理酒店候选清单。",
+            )
+        notify("hotel", "酒店候选已就绪")
+
+        logger.info("[TripPlanner] ③ 查询天气")
         weather_text = self._run_step(
             self.weather_agent,
             f"目的地：{request.destination}，出发日期：{request.start_date or date.today().isoformat()}"
@@ -153,25 +179,24 @@ class TripPlannerAgent:
         )
         notify("weather", "目的地天气预报已获取")
 
-        logger.info("[TripPlanner] ③ 推荐酒店")
-        hotel_text = self._run_step(
-            self.hotel_agent,
-            f"目的地：{request.destination}\n用户需求：{user_brief}\n请搜索并整理酒店候选清单。",
-        )
-        notify("hotel", "酒店候选已就绪")
+        # ④ 正餐候选：确定性 around_search，按天聚类（批次 2.1）
+        logger.info("[TripPlanner] ④ 搜索正餐候选（按景点簇）")
+        meal_text = self._meal_candidates(request, coords, center)
 
-        logger.info("[TripPlanner] ④ 生成行程计划")
+        logger.info("[TripPlanner] ⑤ 生成行程计划")
         notify("planning", "正在整合候选信息，规划每日行程…")
         planner_input = (
             f"## 用户需求\n{user_brief}\n\n"
             f"## 候选景点清单\n{attractions_text}\n\n"
-            f"## 天气预报\n{weather_text}\n\n"
             f"## 候选酒店清单\n{hotel_text}\n\n"
+            f"## 候选餐厅清单\n"
+            f"{meal_text or '（未搜到周边餐饮候选，午餐/晚餐可选用目的地知名真实餐厅，名称与坐标必须真实，禁止编造）'}\n\n"
+            f"## 天气预报\n{weather_text}\n\n"
             "请根据以上信息，严格按照系统提示词中的 JSON Schema 输出完整行程计划，只输出 JSON。"
         )
         planner_output = self._run_step(self.planner_agent, planner_input)
 
-        logger.info("[TripPlanner] ⑤ 解析结果")
+        logger.info("[TripPlanner] ⑥ 解析结果")
         plan = self._parse_plan(planner_output, request)
         notify("planned", "行程初稿已生成")
 
@@ -342,20 +367,37 @@ class TripPlannerAgent:
         return plan
 
     def _gather_repair_candidates(self, plan: TripPlan, issues: list[dict]) -> str:
-        """为闭馆/距离问题搜索真实替代候选（密度问题由 LLM 调整天数分配即可）。"""
+        """为闭馆/距离/必去不去问题搜索真实替代候选（密度问题由 LLM 调整天数分配即可）。"""
         sections: list[str] = []
         seen: set[str] = set()
+        plan_coords = {a.name: a.location.model_dump() for d in plan.daily_plans for a in d.attractions}
         for i in issues:
-            if i["kind"] == "density" or not i.get("location") or i["name"] in seen:
+            if i["kind"] == "density":
                 continue
-            seen.add(i["name"])
-            cands = search_candidates(self.mcp_tool.client, i["name"], i["location"], "景点", plan.destination)
+            name = i["name"]
+            if i["kind"] == "missing_must":
+                # 必去点未出现：按名称搜索真实 POI 供补入（不进 seen，允许与去重无关）
+                cands = search_candidates(self.mcp_tool.client, "", None, name, plan.destination)
+                lines = [
+                    f"{n}. {c['name']} | {c['address']} | {c['longitude']},{c['latitude']}"
+                    for n, c in enumerate(cands, 1)
+                ]
+                sections.append(
+                    f"### 必去「{name}」的真实 POI（补入主行程用，名称/坐标原样使用）：\n"
+                    + ("\n".join(lines) if lines else "（高德未搜到该地点，请勿编造，保持计划中不出现即可）")
+                )
+                continue
+            if not i.get("location") or name in seen:
+                continue
+            seen.add(name)
+            loc = plan_coords.get(name) or i["location"]
+            cands = search_candidates(self.mcp_tool.client, name, loc, "景点", plan.destination)
             lines = [
                 f"{n}. {c['name']} | {c['address']} | {c['longitude']},{c['latitude']}"
                 for n, c in enumerate(cands, 1)
             ]
             sections.append(
-                f"### 替换「{i['name']}」的候选（真实 POI）：\n"
+                f"### 替换「{name}」的候选（真实 POI）：\n"
                 + ("\n".join(lines) if lines else "（周边未搜到候选，可从城市其他真实知名景点中替代）")
             )
         return "\n\n".join(sections) if sections else "（无需替换 POI，仅需调整景点在天数间的分配）"
@@ -393,8 +435,20 @@ class TripPlannerAgent:
             f"出行天数：{request.days} 天",
             f"出发日期：{request.start_date or date.today().isoformat()}",
         ]
+        if request.origin:
+            parts.append(f"出发城市：{request.origin}（大交通请自行安排，首日按时段预留）")
+        if request.arrival_slot:
+            parts.append(f"首日抵达时段：{_SLOT_LABEL.get(request.arrival_slot, request.arrival_slot)}")
+        if request.departure_slot:
+            parts.append(f"末日离开时段：{_SLOT_LABEL.get(request.departure_slot, request.departure_slot)}")
+        parts.append(f"行程节奏：{_PACE_LABEL.get(request.pace, '标准')}")
+        parts.append(f"市内交通：{_TRANSIT_LABEL.get(request.transit_mode, '打车')}")
         if request.budget:
             parts.append(f"总预算：{request.budget:.0f} 元")
+        if request.must_see:
+            parts.append(f"必去地点：{'、'.join(request.must_see)}")
+        if request.avoid:
+            parts.append(f"不去地点：{'、'.join(request.avoid)}")
         if request.preferences:
             parts.append(f"旅行偏好：{'、'.join(request.preferences)}")
         if request.group_type:
@@ -402,6 +456,93 @@ class TripPlannerAgent:
         if request.notes:
             parts.append(f"特殊要求：{request.notes}")
         return "\n".join(parts)
+
+    # ---------- 确定性候选搜索（批次 2） ----------
+
+    @staticmethod
+    def _parse_candidate_coords(text: str) -> list[tuple[float, float]]:
+        """从「名称 | … | 经度,纬度 | …」候选表抽取坐标，解析失败的行跳过。"""
+        coords: list[tuple[float, float]] = []
+        for line in (text or "").splitlines():
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) < 4:
+                continue
+            lng, _, lat = parts[3].partition(",")
+            try:
+                coords.append((float(lng), float(lat)))
+            except ValueError:
+                continue
+        return coords
+
+    def _around_pois(self, keywords: str, location: tuple[float, float], radius: int, limit: int = 8) -> list[dict]:
+        """确定性 around_search：返回 [{name, type, address, longitude, latitude}] 列表。"""
+        try:
+            pace()
+            r = self.mcp_tool.client.call_tool(
+                "maps_around_search",
+                {
+                    "keywords": keywords,
+                    "location": f"{location[0]},{location[1]}",
+                    "radius": radius,
+                },
+            )
+            pois = json.loads(r).get("pois") or []
+        except Exception:  # noqa: BLE001
+            logger.warning("[TripPlanner] around_search 失败（%s）", keywords, exc_info=True)
+            return []
+        out: list[dict] = []
+        for p in pois:
+            nm = str(p.get("name", "")).strip()
+            if not nm:
+                continue
+            lng, _, lat = str(p.get("location", "")).partition(",")
+            try:
+                lng_f, lat_f = float(lng), float(lat)
+            except ValueError:
+                continue
+            ptype = str(p.get("type", "") or "")
+            out.append(
+                {
+                    "name": nm,
+                    "type": ptype.split(";")[0],
+                    "address": str(p.get("address", "") or ""),
+                    "longitude": lng_f,
+                    "latitude": lat_f,
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out
+
+    def _hotel_candidates(self, center: tuple[float, float]) -> str:
+        """围绕景点质心搜索酒店候选，按既有「候选酒店」表格式输出（价位由 Planner 估算填 0）。"""
+        pois = self._around_pois("酒店", center, 5000, limit=8)
+        if not pois:
+            return ""
+        lines = [
+            f"{p['name']} | {p['type'] or '酒店'} | {p['address']} | {p['longitude']},{p['latitude']} | 0"
+            for p in pois
+        ]
+        return "\n".join(lines)
+
+    def _meal_candidates(self, request: TripRequest, coords: list[tuple[float, float]], center: tuple[float, float] | None) -> str:
+        """按「景点簇」搜索正餐候选（每簇一个 around_search，批次 2.1）。"""
+        if not coords:
+            return ""
+        day_centers = cluster_centroids(coords, request.days)
+        if not day_centers and center:
+            day_centers = [center]
+        sections: list[str] = []
+        for i, c in enumerate(day_centers, 1):
+            pois = self._around_pois("美食", c, 1500, limit=5)
+            if not pois:
+                continue
+            lines = [
+                f"{p['name']} | {p['type'] or '餐饮'} | {p['address']} | {p['longitude']},{p['latitude']}"
+                for p in pois
+            ]
+            sections.append(f"### 第{i}天景点簇附近餐饮候选\n" + "\n".join(lines))
+        return "\n\n".join(sections)
 
     def _parse_plan(self, raw: str, request: TripRequest) -> TripPlan:
         """从 Planner 输出中提取 JSON 并校验；失败带错误重试一次。"""

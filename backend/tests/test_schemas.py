@@ -52,3 +52,35 @@ def test_demo_plan_passes_new_limits():
     """demo 数据是既有基线，模型收紧后必须仍然通过。"""
     plan = build_demo_plan(["2026-10-01"] * 3)
     TripPlan.model_validate(plan.model_dump())
+
+
+def test_new_request_fields_have_defaults():
+    """批次 1.1/3 新增请求字段：缺省时取默认，旧请求可正常构造。"""
+    req = TripRequest(destination="北京")
+    assert req.arrival_slot == ""
+    assert req.departure_slot == ""
+    assert req.pace == "standard"
+    assert req.must_see == []
+    assert req.avoid == []
+    assert req.transit_mode == "taxi"
+    assert req.origin == ""
+
+
+def test_old_request_json_loads_without_new_fields():
+    """旧请求 JSON（无新字段）能 model_validate，不报错。"""
+    TripRequest.model_validate({"destination": "北京", "start_date": "2026-10-01", "days": 3})
+
+
+def test_must_see_avoid_bounds():
+    must_fail(lambda: TripRequest(destination="北京", must_see=["x"] * 6))
+    must_fail(lambda: TripRequest(destination="北京", must_see=["x" * 41]))
+    must_fail(lambda: TripRequest(destination="北京", avoid=["x"] * 6))
+    TripRequest(destination="北京", must_see=["中山陵"] * 5, avoid=["夫子庙"] * 5)
+
+
+def test_pace_literal_rejects_invalid():
+    must_fail(lambda: TripRequest(destination="北京", pace="slow"))  # 非法 Literal
+
+
+def test_transit_mode_literal_rejects_invalid():
+    must_fail(lambda: TripRequest(destination="北京", transit_mode="bike"))
