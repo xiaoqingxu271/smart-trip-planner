@@ -16,7 +16,8 @@ RUN curl -fsSL https://npmmirror.com/mirrors/node/v22.23.3/node-v22.23.3-linux-x
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# pypi 同切阿里云源：官方源从国内云主机下载 wheel 可能慢到 KB/s
+RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 
 COPY app ./app
 COPY sql ./sql

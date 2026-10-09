@@ -257,10 +257,14 @@ grep -Hn -e "FROM" -e "image:" backend/Dockerfile frontend/Dockerfile docker-com
 
 ### 7.2 串行构建与启动
 
+> 依赖下载已在 Dockerfile 内置国内源加速（后端 apt/pypi 走阿里云、前端 npm 走 npmmirror），
+> 7.1 只需处理 5 处**基础镜像**引用。2026-10-09 实测：未加依赖源时构建耗时 28 分钟
+> （pypi/npm 官方源被限速），内置后预期 10~15 分钟。
+
 2 GiB 机器**不要**直接 `up --build`（前后端并行构建会 OOM），分两步：
 
 ```bash
-# 1) 串行构建镜像（首次约 8~15 分钟，主要耗时在下载依赖）
+# 1) 串行构建镜像（首次约 10~15 分钟）
 docker compose build backend
 docker compose build frontend
 
@@ -286,10 +290,18 @@ docker compose logs -f backend   # 看后端日志，Ctrl+C 退出查看（不�
 curl http://127.0.0.1/api/health
 ```
 
-返回包含 MySQL / Redis 状态的 JSON 即正常。然后在**本地浏览器**访问：
+正常返回（2026-10-09 实测样例）：
+
+```json
+{"status":"ok","demo_mode":false,"auth_required":false,"auth_mode":"none","mysql":true,"redis":true,"message":""}
+```
+
+然后在**本地浏览器**访问：
 
 - 应用首页：**http://139.196.40.216**
 - 建议真实发起一次行程规划，确认 LLM、高德 MCP、地图、数据库全链路正常
+  （2026-10-09 实测：真实模式 POST /api/trip/plan 72 秒返回完整行程并自动入库，
+  `/api/trip/history` 可查到该行程）
 
 > 后端 API 文档（/docs）未通过 Nginx 暴露。需要查看时，在本地 PowerShell 建立 SSH 隧道：
 > `ssh -L 8000:127.0.0.1:8000 root@139.196.40.216`
@@ -388,3 +400,11 @@ GitHub 用第 5 步的代理镜像；Docker 镜像检查第 4.1 步加速器是�
 
 **Q6：行程规划一直转圈或超时**
 首次调用需 npx 下载 MCP 包 + 4 个 Agent 串行执行，真实模式约 30~90 秒；若服务器访问外网 API 不稳定，检查 `curl https://api.deepseek.com` 是否通。
+
+**Q7：Windows Git Bash 用 curl 测 /api/trip/plan 报 "There was an error parsing the body"**
+Git Bash 控制台把中文按 GBK 编码发出，FastAPI 按 UTF-8 解析失败。把请求体写成 UTF-8 文件再发：
+
+```bash
+python -c "import json,pathlib; pathlib.Path('req.json').write_bytes(json.dumps({'destination':'杭州','days':1}, ensure_ascii=False).encode('utf-8'))"
+curl -s -X POST http://139.196.40.216/api/trip/plan -H "Content-Type: application/json; charset=utf-8" --data-binary @req.json
+```
