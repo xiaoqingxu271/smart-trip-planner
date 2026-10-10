@@ -280,33 +280,48 @@ class TripStore:
             return True
         return detail.get("user_id") in (user_id, None) or bool(detail.get("is_seed"))
 
-    def list_summaries(self, filter: str, limit: int = 12, user_id: int | None = None) -> list[dict[str, Any]]:
+    def list_summaries(
+        self,
+        filter: str,
+        limit: int = 12,
+        user_id: int | None = None,
+        city: str | None = None,
+        budget_min: float | None = None,
+        budget_max: float | None = None,
+    ) -> list[dict[str, Any]]:
         """卡片摘要列表。filter: recent | starred | seed（只查摘要列，不拉 plan_json）。
 
         多用户模式：recent/starred 限定本人，seed（示例作品）全员可见。
+        支持按城市（destination）与预算区间（grand_total）细粒度筛选。
         """
-        order = {
-            "recent": "created_at DESC",
-            "starred": "created_at DESC",
-            "seed": "created_at DESC",
-        }[filter]
-        if user_id is None:
-            where = {"recent": "is_seed = 0", "starred": "starred = 1", "seed": "is_seed = 1"}[filter]
-            params: tuple = (limit,)
-        else:
-            where = {
-                "recent": "is_seed = 0 AND user_id = %s",
-                "starred": "starred = 1 AND user_id = %s",
-                "seed": "is_seed = 1",
-            }[filter]
-            params = (user_id, limit) if "%s" in where else (limit,)
+        conds = ["is_seed = 0"] if filter == "recent" else (
+            ["starred = 1"] if filter == "starred" else ["is_seed = 1"]
+        )
+        params: list[Any] = []
+        if user_id is not None and filter in ("recent", "starred"):
+            conds.append("user_id = %s")
+            params.append(user_id)
+
+        if city:
+            conds.append("destination = %s")
+            params.append(city)
+        if budget_min is not None:
+            conds.append("grand_total >= %s")
+            params.append(budget_min)
+        if budget_max is not None:
+            conds.append("grand_total <= %s")
+            params.append(budget_max)
+        if budget_min is not None or budget_max is not None:
+            conds.append("grand_total IS NOT NULL")
+
+        params.append(limit)
         sql = (
             "SELECT id, destination, days, grand_total, starred, is_seed, created_at,"
             " cover_url, themes, summary"
-            f" FROM trips WHERE {where} ORDER BY {order} LIMIT %s"
+            f" FROM trips WHERE {' AND '.join(conds)} ORDER BY created_at DESC LIMIT %s"
         )
         with connection(self.settings) as conn, conn.cursor() as cur:
-            cur.execute(sql, params)
+            cur.execute(sql, tuple(params))
             rows = cur.fetchall()
 
         # 收藏页按 Redis ZSET 的收藏先后倒序（新的在前），库不可用时保持 SQL 顺序

@@ -863,15 +863,30 @@ def _get_store_or_503() -> TripStore:
 
 
 @app.get("/api/trip/history", response_model=list[TripSummary])
-async def list_history(http: Request, filter: str = "recent", limit: int = 12):
-    """行程卡片列表。filter: recent(我的历史) | starred(我的收藏) | seed(示例作品)"""
+async def list_history(
+    http: Request,
+    filter: str = "recent",
+    limit: int = 12,
+    city: str = "",
+    budget_min: float | None = None,
+    budget_max: float | None = None,
+):
+    """行程卡片列表。filter: recent(我的历史) | starred(我的收藏) | seed(示例作品)。
+    可选 city（按城市）、budget_min/budget_max（按预算区间）细粒度筛选。"""
     user_id = _uid(http)
     if filter not in ("recent", "starred", "seed"):
         raise HTTPException(status_code=400, detail="filter 仅支持 recent/starred/seed")
     limit = max(1, min(limit, 50))
 
     def _load():
-        return _get_store_or_503().list_summaries(filter, limit, user_id)
+        return _get_store_or_503().list_summaries(
+            filter,
+            limit,
+            user_id,
+            city=city.strip() or None,
+            budget_min=budget_min,
+            budget_max=budget_max,
+        )
 
     try:
         # 同步 MySQL 查询（含首次存储初始化的 DDL），放 IO 线程池避免阻塞事件循环

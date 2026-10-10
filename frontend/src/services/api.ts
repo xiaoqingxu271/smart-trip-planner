@@ -237,8 +237,14 @@ export async function poiImage(name: string, city: string): Promise<string | nul
 
 export type HistoryFilter = 'recent' | 'starred' | 'seed'
 
-export async function getHistory(filter: HistoryFilter, limit = 12): Promise<TripSummary[]> {
-  return request.get('/trip/history', { params: { filter, limit } })
+export interface HistoryQuery {
+  city?: string
+  budget_min?: number
+  budget_max?: number
+}
+
+export async function getHistory(filter: HistoryFilter, limit = 12, query: HistoryQuery = {}): Promise<TripSummary[]> {
+  return request.get('/trip/history', { params: { filter, limit, ...query } })
 }
 
 export async function getTripDetail(id: number): Promise<TripDetail> {

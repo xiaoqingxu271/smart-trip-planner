@@ -14,6 +14,7 @@ import {
   logoutUser,
   planJobPoll,
   type HistoryFilter,
+  type HistoryQuery,
   type PlanStage,
 } from '@/services/api'
 import type { TripRequest, TripSummary } from '@/types'
@@ -100,6 +101,40 @@ const galleryError = ref('')
 // 封面图加载失败的行程 id → 展示 emoji 占位，避免出现破图图标
 const brokenCovers = reactive<Record<number, boolean>>({})
 
+// 精选行程细粒度筛选：按城市与预算区间
+const cityOptions = ['北京', '上海', '广州', '深圳', '成都', '杭州', '重庆', '西安', '南京', '武汉', '长沙', '厦门', '青岛', '三亚', '昆明', '大理', '桂林', '苏州', '丽江', '张家界']
+  .map((c) => ({ value: c, label: c }))
+const budgetOptions = [
+  { value: 'all', label: '全部预算' },
+  { value: '0-2000', label: '2千以下' },
+  { value: '2000-5000', label: '2千 - 5千' },
+  { value: '5000-10000', label: '5千 - 1万' },
+  { value: '10000-20000', label: '1万 - 2万' },
+  { value: '20000+', label: '2万以上' },
+]
+const cityFilter = ref<string>()
+const budgetFilter = ref<string>()
+
+function budgetRangeOf(v?: string): [number | undefined, number | undefined] {
+  switch (v) {
+    case '0-2000': return [0, 2000]
+    case '2000-5000': return [2000, 5000]
+    case '5000-10000': return [5000, 10000]
+    case '10000-20000': return [10000, 20000]
+    case '20000+': return [20000, undefined]
+    default: return [undefined, undefined]
+  }
+}
+
+function galleryQuery(): HistoryQuery {
+  const q: HistoryQuery = {}
+  if (cityFilter.value) q.city = cityFilter.value
+  const [min, max] = budgetRangeOf(budgetFilter.value)
+  if (min !== undefined) q.budget_min = min
+  if (max !== undefined) q.budget_max = max
+  return q
+}
+
 function coverSrc(url?: string | null): string | null {
   return imgProxy(url)
 }
@@ -112,7 +147,7 @@ async function loadGallery() {
   galleryLoading.value = true
   galleryError.value = ''
   const results = await Promise.allSettled(
-    galleryTabs.map((t) => getHistory(t.key, 12)),
+    galleryTabs.map((t) => getHistory(t.key, 12, galleryQuery())),
   )
   results.forEach((r, i) => {
     if (r.status === 'fulfilled') {
@@ -471,6 +506,24 @@ async function handleLogout() {
         </div>
       </div>
       <p class="gallery-hint">{{ galleryTabs.find((t) => t.key === activeTab)?.hint }}</p>
+      <div class="gallery-filters">
+        <a-select
+          v-model:value="cityFilter"
+          :options="cityOptions"
+          placeholder="全部城市"
+          allow-clear
+          class="filter-select"
+          @change="loadGallery"
+        />
+        <a-select
+          v-model:value="budgetFilter"
+          :options="budgetOptions"
+          placeholder="全部预算"
+          allow-clear
+          class="filter-select"
+          @change="loadGallery"
+        />
+      </div>
 
       <a-spin :spinning="galleryLoading">
         <a-alert v-if="galleryError" type="warning" show-icon :message="galleryError" style="margin-bottom: 16px" />
@@ -997,7 +1050,19 @@ async function handleLogout() {
 .gallery-hint {
   color: var(--ink-400);
   font-size: 13px;
-  margin: 10px 0 20px;
+  margin: 10px 0 14px;
+}
+
+.gallery-filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.filter-select {
+  width: 170px;
 }
 
 .gallery-grid {
