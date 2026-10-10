@@ -67,7 +67,7 @@ onMounted(async () => {
 
           <div class="poi-list">
             <div v-for="(a, i) in day.attractions" :key="i" class="poi">
-              <img v-if="a.image_url" :src="imgProxy(a.image_url)!" :alt="a.name" class="poi-img" />
+              <img v-if="a.image_url" :src="imgProxy(a.image_url)!" :alt="a.name" loading="lazy" class="poi-img" />
               <span v-else class="poi-ico"><AppIcon name="landmark" :size="20" color="#93bfa6" /></span>
               <div class="poi-info">
                 <div class="poi-name">

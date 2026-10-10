@@ -21,7 +21,7 @@ import AppIcon from '@/components/AppIcon.vue'
 const router = useRouter()
 
 const destinationSuggestions = ['北京', '上海', '西安', '成都', '杭州', '重庆', '广州', '三亚', '厦门', '青岛']
-const preferenceOptions = ['人文历史', '自然风光', '美食探店', '购物血拼', '亲子游玩', '网红打卡', '休闲度假', '博物馆控']
+const preferenceOptions = ['人文历史', '自然风光', '美食探店', '购物血拼', '亲子游玩', '网红打卡', '休闲度假', '博物馆控', '摄影打卡', '夜生活', '老年慢游']
 const groupOptions = ['独自出行', '情侣出游', '家庭亲子', '朋友结伴']
 
 const slotOptions = [

@@ -18,6 +18,8 @@ import logging
 import re
 import threading
 import time
+import uuid
+from contextvars import ContextVar
 from datetime import date
 from typing import Callable
 
@@ -49,6 +51,57 @@ _SLOT_LABEL = {"morning": "上午", "afternoon": "下午", "evening": "傍晚"}
 _PACE_LABEL = {"easy": "轻松（每天最多 2 个景点）", "standard": "标准（每天最多 3 个景点）", "packed": "紧凑（每天最多 4 个景点）"}
 _TRANSIT_LABEL = {"walk": "步行", "transit": "公交/地铁", "taxi": "打车", "drive": "自驾"}
 
+# 每次规划/重规划的唯一 trace id（批次 G）：贯穿整条流水线日志，便于把同一请求的
+# 多段日志/失败信息串起来。ContextVar 在线程池中随上下文传播，无跨请求串号风险。
+_trace: ContextVar[str] = ContextVar("trace_id", default="-")
+
+
+def _current_trace() -> str:
+    return _trace.get()
+
+
+class _UsageTrackingLLM:
+    """在 HelloAgentsLLM 外包一层，捕获每次调用的 token 用量（批次 G）。
+
+    SimpleAgent.run 只返回文本、丢弃 usage，故在此直接拦截 invoke / invoke_with_tools
+    两个底层调用点：前者返回 LLMResponse（usage 为 dict），后者返回原生 adapter 响应
+    （usage 为带 prompt_tokens/completion_tokens 属性的对象）。两种形状都兼容。
+    """
+
+    def __init__(self, llm: HelloAgentsLLM):
+        self._llm = llm
+
+    def __getattr__(self, name: str):
+        return getattr(self._llm, name)
+
+    def invoke(self, messages, **kwargs):
+        resp = self._llm.invoke(messages, **kwargs)
+        self._record(getattr(resp, "usage", None))
+        return resp
+
+    def invoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+        resp = self._llm.invoke_with_tools(messages, tools, tool_choice, **kwargs)
+        self._record(getattr(resp, "usage", None))
+        return resp
+
+    @staticmethod
+    def _record(usage) -> None:
+        if not usage:
+            return
+        try:
+            if isinstance(usage, dict):
+                metrics.record_llm_usage(
+                    int(usage.get("prompt_tokens") or 0),
+                    int(usage.get("completion_tokens") or 0),
+                )
+            elif hasattr(usage, "prompt_tokens"):
+                metrics.record_llm_usage(
+                    int(getattr(usage, "prompt_tokens") or 0),
+                    int(getattr(usage, "completion_tokens") or 0),
+                )
+        except (TypeError, ValueError):
+            return
+
 
 class PlannerError(Exception):
     pass
@@ -75,6 +128,8 @@ class TripPlannerAgent:
             base_url=settings.llm_base_url,
             temperature=settings.llm_temperature,
         )
+        # 在外层包裹 usage 追踪（批次 G）：后续所有 Agent 复用该实例，token 用量自动入指标
+        self.llm = _UsageTrackingLLM(self.llm)
         # 单个 MCP 服务器子进程；确定性代码（校验器/重规划候选/地理编码）经
         # self.mcp_tool.client 直连，显式指定工具名，不经过 LLM，不受白名单约束
         self.mcp_client = MCPStdioClient(
@@ -147,6 +202,8 @@ class TripPlannerAgent:
 
     def plan(self, request: TripRequest, progress: ProgressCallback | None = None) -> TripPlan:
         self._reset_agents()
+        _trace.set(uuid.uuid4().hex[:12])
+        logger.info("[TripPlanner] trace=%s 开始规划：%s", _current_trace(), request.destination)
         def notify(stage: str, message: str, extra: dict | None = None) -> None:
             if progress is None:
                 return
@@ -226,6 +283,8 @@ class TripPlannerAgent:
         酒店被反馈时影响所有天，自动退化为全量重规划。
         """
         self._reset_agents()
+        _trace.set(uuid.uuid4().hex[:12])
+        logger.info("[TripPlanner] trace=%s 开始重规划（%d 条反馈）", _current_trace(), len(feedbacks))
         target_labels = {"attraction": "景点", "hotel": "酒店", "meal": "餐厅"}
         affected_days = self._affected_days(plan, feedbacks)
         all_days = {d.day for d in plan.daily_plans}
@@ -445,7 +504,7 @@ class TripPlannerAgent:
         try:
             return agent.run(input_text, **kwargs)
         except Exception as e:  # noqa: BLE001
-            raise PlannerError(f"Agent [{agent.name}] 执行失败: {e}") from e
+            raise PlannerError(f"Agent [{agent.name}] 执行失败 (trace={_current_trace()}): {e}") from e
         finally:
             metrics.record_llm_call(time.monotonic() - start)
 

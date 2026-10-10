@@ -603,6 +603,7 @@ def _plan_execute(request: TripRequest, progress=None, user_id: int | None = Non
         if cached:
             try:
                 logger.info("结果缓存命中: %s", result_key)
+                metrics.record_cache_hit()  # 命中即整条流水线零 LLM/高德开销（批次 G）
                 notify("started", "结果缓存命中，直接复用上次规划")
                 return TripPlan.model_validate(json.loads(cached))
             except Exception:  # noqa: BLE001
