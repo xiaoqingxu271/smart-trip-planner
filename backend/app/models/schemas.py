@@ -124,6 +124,10 @@ class DayPlan(BaseModel):
     daily_budget: float = Field(0, ge=0, description="当日预估花费（元）")
 
 
+# 总预算最低标准（元/天）：防止「预算过低 + 天数过多」这类无法执行的组合
+MIN_BUDGET_PER_DAY = 200.0
+
+
 class TripRequest(BaseModel):
     """行程规划请求"""
     destination: str = Field(..., min_length=1, max_length=50, description="目的地城市，如 北京")
@@ -151,6 +155,18 @@ class TripRequest(BaseModel):
     transit_mode: Literal["walk", "transit", "taxi", "drive"] = Field("taxi", description="市内交通方式")
     # 出发城市（批次 3.5，可选）：只用于生成大交通提示，不调票务 API
     origin: str = Field("", max_length=50, description="出发城市（可选）")
+
+    @model_validator(mode="after")
+    def check_budget_floor(self):
+        """总预算须满足最低标准（每天 MIN_BUDGET_PER_DAY 元），否则拒绝规划。"""
+        if self.budget is not None and self.days:
+            floor = self.days * MIN_BUDGET_PER_DAY
+            if self.budget < floor:
+                raise ValueError(
+                    f"总预算过低：{self.days} 天行程至少需要 {floor:.0f} 元"
+                    f"（最低 {MIN_BUDGET_PER_DAY:.0f} 元/天），请调高预算或减少天数"
+                )
+        return self
 
 
 class TripPlan(BaseModel):

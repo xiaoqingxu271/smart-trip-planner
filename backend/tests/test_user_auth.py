@@ -162,30 +162,3 @@ def test_none_mode_store_ignores_user_param(monkeypatch):
     assert store.get_detail(tid) is not None
     store.delete(tid)
     assert store.get_detail(tid) is None
-
-
-def test_delete_account_purges_user_and_trips():
-    """注销（批次 E）：删除本人全部行程 + 用户记录，并撤销会话。"""
-    from app.models.schemas import TripRequest
-    from app.services.demo_data import build_demo_plan
-
-    username = _uniq("del")
-    reg = _register(username)
-    token, uid = reg["token"], reg["user_id"]
-    auth = {"Authorization": f"Bearer {token}"}
-
-    store = main_mod._get_store()
-    req = TripRequest(destination="北京", days=2)
-    plan = build_demo_plan(["2026-10-01", "2026-10-02"])
-    tid = store.save(req, plan, uid)
-    assert store.get_detail(tid) is not None
-
-    assert client.delete("/api/auth/account", headers=auth).status_code == 200
-
-    # 会话被撤销 → me 401
-    assert client.get("/api/auth/me", headers=auth).status_code == 401
-    # 行程随删除消失
-    assert store.get_detail(tid) is None
-    # 账号已删 → 无法再登录
-    r = client.post("/api/auth/login", json={"username": username, "password": "secret66"})
-    assert r.status_code == 401

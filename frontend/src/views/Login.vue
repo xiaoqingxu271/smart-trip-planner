@@ -75,10 +75,9 @@ async function submitCode() {
       <svg class="visual-art" viewBox="0 0 600 900" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
         <circle cx="452" cy="238" r="86" fill="#f2b34c" opacity="0.95" />
         <circle cx="452" cy="238" r="130" fill="#f2b34c" opacity="0.18" />
-        <polygon points="0,760 170,520 320,760" fill="#0f2b21" opacity="0.9" />
-        <polygon points="200,760 400,470 620,760" fill="#16352a" opacity="0.9" />
-        <polygon points="60,760 220,580 400,760" fill="#1f4636" opacity="0.85" />
-        <rect y="748" width="600" height="152" fill="#0f2b21" opacity="0.92" />
+        <polygon points="0,900 170,520 320,900" fill="#0f2b21" opacity="0.9" />
+        <polygon points="200,900 400,470 620,900" fill="#16352a" opacity="0.9" />
+        <polygon points="60,900 220,580 400,900" fill="#1f4636" opacity="0.85" />
       </svg>
 
       <div class="visual-body">
@@ -96,7 +95,6 @@ async function submitCode() {
           <li><span class="agent-ico"><AppIcon name="calendar-days" :size="16" color="rgba(255,255,255,0.92)" /></span>行程规划 Agent，串起每一天的动线</li>
         </ul>
       </div>
-      <p class="visual-foot">多智能体框架驱动</p>
     </aside>
 
     <!-- 右侧表单 -->
@@ -187,8 +185,8 @@ async function submitCode() {
   color: #fff;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  padding: 56px 56px 36px;
+  justify-content: center;
+  padding: 40px 56px 60px;
 }
 
 .visual-art {
@@ -271,21 +269,13 @@ async function submitCode() {
   font-size: 16px;
 }
 
-.visual-foot {
-  position: relative;
-  margin: 40px 0 0;
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  color: rgba(255, 255, 255, 0.45);
-}
-
 /* ---------- 右侧表单 ---------- */
 .panel {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 48px 24px;
+  padding: 84px 24px 40px;
 }
 
 .form-wrap {

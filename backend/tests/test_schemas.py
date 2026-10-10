@@ -32,6 +32,21 @@ def test_days_range():
     must_fail(lambda: TripRequest(destination="北京", days=8))
 
 
+def test_budget_minimum_per_day():
+    from app.models.schemas import MIN_BUDGET_PER_DAY
+
+    # 未填预算：仍可选，不强制
+    TripRequest(destination="北京", days=3)
+    # 恰好达标 → 通过
+    TripRequest(destination="北京", days=3, budget=3 * MIN_BUDGET_PER_DAY)
+    # 低于最低标准 → 拒绝
+    must_fail(lambda: TripRequest(destination="北京", days=3, budget=3 * MIN_BUDGET_PER_DAY - 1))
+    # 天数多预算少 → 拒绝
+    must_fail(lambda: TripRequest(destination="北京", days=7, budget=500))
+    # 天数少预算低 → 按天数折算后达标
+    TripRequest(destination="北京", days=1, budget=MIN_BUDGET_PER_DAY)
+
+
 def test_replan_feedback_bounds():
     fb = lambda: Feedback(target="attraction", name="x", reason="y")  # noqa: E731
     must_fail(lambda: ReplanBody(trip_id=1, feedbacks=[fb()] * 11))

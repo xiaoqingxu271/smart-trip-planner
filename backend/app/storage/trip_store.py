@@ -183,6 +183,7 @@ class TripStore:
                 "UPDATE trips SET share_token = %s, share_created_at = NOW() WHERE id = %s",
                 (token, trip_id),
             )
+            self.cache.delete(f"trip:detail:{trip_id}")
             return token
 
     def revoke_share(self, trip_id: int, user_id: int | None = None) -> bool:
@@ -195,6 +196,7 @@ class TripStore:
                 " WHERE id = %s",
                 (trip_id,),
             )
+        self.cache.delete(f"trip:detail:{trip_id}")
         return True
 
     def get_share_detail(self, token: str) -> dict[str, Any] | None:
@@ -244,9 +246,11 @@ class TripStore:
 
         with connection(self.settings) as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT id, request_json, plan_json, starred, is_seed, user_id, created_at"
+                "SELECT id, request_json, plan_json, starred, is_seed, user_id, created_at,"
+                " (share_token IS NOT NULL AND share_created_at IS NOT NULL"
+                "  AND share_created_at > (NOW() - INTERVAL %s DAY)) AS shared"
                 " FROM trips WHERE id = %s",
-                (trip_id,),
+                (self.settings.share_ttl_days, trip_id),
             )
             row = cur.fetchone()
         if not row:
@@ -257,6 +261,7 @@ class TripStore:
             "is_seed": bool(row["is_seed"]),
             "user_id": row["user_id"],
             "created_at": row["created_at"].isoformat(timespec="minutes"),
+            "shared": bool(row.get("shared")),
             "request": json.loads(row["request_json"]),
             "plan": json.loads(row["plan_json"]),
         }

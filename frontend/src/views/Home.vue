@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import {
   deleteTrip,
-  deleteAccount,
   getHistory,
   getMe,
   getAppStatus,
   getToken,
+  getUsername,
+  setUsername,
   imgProxy,
   logoutUser,
   planJobPoll,
@@ -44,6 +45,9 @@ const transitOptions = [
 
 const today = new Date().toISOString().slice(0, 10)
 
+// 总预算最低标准（元/天），与后端 schemas.MIN_BUDGET_PER_DAY 保持一致
+const MIN_BUDGET_PER_DAY = 200
+
 const form = reactive<TripRequest>({
   destination: '',
   start_date: today,
@@ -66,7 +70,7 @@ const paceTouched = ref(false)
 const submitting = ref(false)
 const loadingTitle = ref('')
 const progressPercent = ref(0)
-const username = ref('')
+const username = ref(getUsername())
 
 // 流式规划各阶段对应的进度条百分比
 const STAGE_PERCENT: Record<string, number> = {
@@ -169,6 +173,15 @@ async function handleSubmit() {
     message.warning('请选择出发日期')
     return
   }
+  if (!form.budget || form.budget <= 0) {
+    message.warning('请填写总预算')
+    return
+  }
+  const budgetFloor = form.days * MIN_BUDGET_PER_DAY
+  if (form.budget < budgetFloor) {
+    message.warning(`总预算过低：${form.days} 天行程至少需要 ${budgetFloor.toLocaleString('zh-CN')} 元（最低 ${MIN_BUDGET_PER_DAY} 元/天），请调高预算或减少天数`)
+    return
+  }
 
   submitting.value = true
   progressPercent.value = 5
@@ -199,11 +212,15 @@ onMounted(() => {
 })
 
 async function loadUserChip() {
+  // 先用本地缓存即时渲染头像/昵称（登录成功即已写入），避免等网络往返
+  username.value = getUsername()
+  if (!getToken()) return
   try {
     const status = await getAppStatus()
-    if (status.auth_mode === 'user' && getToken()) {
+    if (status.auth_mode === 'user') {
       const me = await getMe()
       username.value = me.username
+      setUsername(me.username)
     }
   } catch {
     /* token 失效由拦截器统一处理 */
@@ -213,25 +230,6 @@ async function loadUserChip() {
 async function handleLogout() {
   await logoutUser()
   window.location.href = '/login'
-}
-
-async function handleDeleteAccount() {
-  Modal.confirm({
-    title: '注销账号',
-    content: '将永久删除你的账号与全部行程数据（含分享链接），此操作不可恢复。确定继续吗？',
-    okText: '确认注销',
-    okType: 'danger',
-    cancelText: '取消',
-    onOk: async () => {
-      try {
-        await deleteAccount()
-        message.success('账号已注销')
-        window.location.href = '/login'
-      } catch (e) {
-        message.error(`注销失败：${(e as Error).message}`)
-      }
-    },
-  })
 }
 </script>
 
@@ -248,14 +246,12 @@ async function handleDeleteAccount() {
           <span class="avatar">{{ username.slice(0, 1).toUpperCase() }}</span>
           <span class="uname">{{ username }}</span>
           <a class="logout" @click="handleLogout">退出</a>
-          <a class="logout danger" @click="handleDeleteAccount">注销</a>
         </div>
       </div>
     </header>
 
     <!-- Hero -->
     <section class="hero">
-      <p class="eyebrow">多智能体 · 旅行规划</p>
       <h1 class="hero-title">把攻略交给智能体，把时间留给<span class="hl">风景</span></h1>
       <p class="hero-sub">
         景点搜索、天气查询、酒店推荐、行程规划四个智能体协作，约一分钟为你生成一份贴合偏好、可编辑、可导出的完整行程。
@@ -299,7 +295,7 @@ async function handleDeleteAccount() {
           <div class="bar-field">
             <label class="bar-label"><AppIcon name="wallet" :size="13" color="#8a978f" />总预算</label>
             <div class="unit-wrap">
-              <a-input-number v-model:value="form.budget" :min="0" :step="500" placeholder="选填" />
+              <a-input-number v-model:value="form.budget" :min="0" :step="100" placeholder="最低 200 元/天" />
               <span class="unit">元</span>
             </div>
           </div>
@@ -619,10 +615,6 @@ async function handleDeleteAccount() {
 }
 
 .logout:hover {
-  color: var(--coral-500);
-}
-
-.logout.danger {
   color: var(--coral-500);
 }
 

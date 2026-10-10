@@ -37,6 +37,22 @@ export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY)
 }
 
+// 当前登录用户名（登录成功即本地缓存，供首页导航栏头像/昵称即时渲染，
+// 免去等 /auth/me 网络往返；后台仍会刷新校验）
+const USERNAME_KEY = 'trip_username'
+
+export function getUsername(): string {
+  return localStorage.getItem(USERNAME_KEY) ?? ''
+}
+
+export function setUsername(name: string): void {
+  localStorage.setItem(USERNAME_KEY, name)
+}
+
+export function clearUsername(): void {
+  localStorage.removeItem(USERNAME_KEY)
+}
+
 request.interceptors.request.use((config) => {
   const code = getAccessCode()
   if (code) config.headers['X-Access-Code'] = code
@@ -58,6 +74,7 @@ request.interceptors.response.use(
     if (error?.response?.status === 401 && !path.startsWith('/login') && !path.startsWith('/share') && !path.startsWith('/register')) {
       localStorage.removeItem(ACCESS_CODE_KEY)
       clearToken()
+      clearUsername()
       window.location.href = '/login'
     }
     return Promise.reject(new Error(message))
@@ -104,12 +121,14 @@ export interface AuthResult {
 export async function registerUser(username: string, password: string): Promise<AuthResult> {
   const r: AuthResult = await request.post('/auth/register', { username, password })
   setToken(r.token)
+  setUsername(r.username)
   return r
 }
 
 export async function loginUser(username: string, password: string): Promise<AuthResult> {
   const r: AuthResult = await request.post('/auth/login', { username, password })
   setToken(r.token)
+  setUsername(r.username)
   return r
 }
 
@@ -118,19 +137,12 @@ export async function logoutUser(): Promise<void> {
     await request.post('/auth/logout')
   } finally {
     clearToken()
+    clearUsername()
   }
 }
 
 export async function getMe(): Promise<{ user_id: number; username: string }> {
   return request.get('/auth/me')
-}
-
-export async function deleteAccount(): Promise<void> {
-  try {
-    await request.delete('/auth/account')
-  } finally {
-    clearToken()
-  }
 }
 
 export async function planTrip(data: TripRequest): Promise<TripPlan> {
@@ -212,6 +224,13 @@ export interface PoiResult {
 
 export async function resolvePoi(keyword: string, city: string): Promise<PoiResult> {
   return request.get('/utils/poi', { params: { keyword, city } })
+}
+
+// ---------- 手动添加景点时按名称搜索实景配图 ----------
+
+export async function poiImage(name: string, city: string): Promise<string | null> {
+  const r = await request.post('/utils/poi-image', { name, city })
+  return r.image_url ?? null
 }
 
 // ---------- 历史与作品集 ----------

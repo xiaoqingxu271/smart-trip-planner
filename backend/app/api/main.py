@@ -216,6 +216,15 @@ class GeocodeResponse(BaseModel):
     formatted_address: str
 
 
+class PoiImageRequest(BaseModel):
+    name: str
+    city: str = ""
+
+
+class PoiImageResponse(BaseModel):
+    image_url: str | None = None
+
+
 # ---------- 图片代理 ----------
 
 # 高德图片 CDN 偶发防盗链/混合内容问题，经同源代理转发并落盘缓存，
@@ -333,14 +342,16 @@ async def geocode(req: GeocodeRequest):
 
         try:
             data = _json.loads(text)
-            geocodes = data.get("geocodes", [])
-            if not geocodes:
+            # MCP 服务器 maps_geo 成功响应的坐标数组在「return」键下
+            # （形如 {"return": [{..., "location": "lng,lat"}]}），而非「geocodes」。
+            results = data.get("return") or data.get("geocodes") or []
+            if not results:
                 raise PlannerError("未查询到该地址的坐标，请更换描述后重试。")
-            lng, lat = geocodes[0]["location"].split(",")
+            lng, lat = results[0]["location"].split(",")
             return GeocodeResponse(
                 longitude=float(lng),
                 latitude=float(lat),
-                formatted_address=geocodes[0].get("formatted_address", req.address),
+                formatted_address=results[0].get("formatted_address", req.address),
             )
         except (ValueError, KeyError, TypeError) as e:
             raise PlannerError(f"地理编码结果解析失败: {e}") from e
@@ -350,6 +361,30 @@ async def geocode(req: GeocodeRequest):
         return await loop.run_in_executor(_io_executor, _run)
     except PlannerError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/utils/poi-image", response_model=PoiImageResponse)
+async def poi_image(req: PoiImageRequest):
+    """按名称搜索单个 POI 的实景配图（前端「手动添加景点」时自动补图）。
+
+    复用全行程 enrich 的同一 ImageService（高德实景优先、Unsplash 兜底、
+    进程内 + Redis 两级缓存 + 全局限速节拍）。
+    """
+    if settings.demo_mode or not settings.ready_for_agents:
+        raise HTTPException(status_code=503, detail="演示模式下不支持图片搜索，请配置密钥后使用真实模式。")
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="name 不能为空")
+    global _image_service
+    if _image_service is None:
+        with _image_service_lock:
+            if _image_service is None:
+                _image_service = ImageService(settings)
+    svc = _image_service
+
+    def _run() -> PoiImageResponse:
+        return PoiImageResponse(image_url=svc.search_photo(req.name.strip(), req.city.strip()))
+
+    return await asyncio.to_thread(_run)
 
 
 class PoiResolveResponse(BaseModel):
@@ -1131,7 +1166,8 @@ async def create_share(http: Request, trip_id: int):
         raise HTTPException(status_code=503, detail="MySQL 不可用，分享功能暂不可用。")
     if not token:
         raise HTTPException(status_code=404, detail="行程不存在或仅本人行程可分享。")
-    base = str(http.base_url).rstrip("/")
+    # 优先使用配置的对外基址（公网/域名部署），否则回退到请求 Host（本地调试）。
+    base = settings.public_base_url.rstrip("/") if settings.public_base_url else str(http.base_url).rstrip("/")
     return {"share_id": token, "share_url": f"{base}/share/{token}"}
 
 

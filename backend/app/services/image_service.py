@@ -115,6 +115,21 @@ class ImageService:
         if info and info.get("location") and getattr(obj, "location", None) is None:
             obj.location = _parse_location(info["location"])
 
+    def search_photo(self, name: str, city: str) -> str | None:
+        """按名称搜索单个 POI 的配图地址（手动添加景点等单点场景）。
+
+        高德实景图优先，Unsplash 氛围图兜底；复用与 enrich 相同的两级缓存与全局限速。
+        """
+        if not name:
+            return None
+        info = self._amap_poi(name, city)
+        url = info.get("photo") if info else None
+        if url is None:
+            url = self.unsplash.search_photo_url(name) or (
+                self.unsplash.search_photo_url(f"{city} travel") if city else None
+            )
+        return url
+
     def _amap_poi(self, name: str, city: str) -> dict | None:
         """POI 搜索结果 {"photo": 图片地址|None, "location": "lng,lat"|None}；未搜到返回 None。"""
         cache_key = f"{city}::{name}"

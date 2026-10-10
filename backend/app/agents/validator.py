@@ -69,10 +69,24 @@ def _coord_distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> flo
     return 2 * 6371000 * asin(sqrt(min(1.0, a)))
 
 
+def _strip_branch(name: str) -> str:
+    """去掉名称里的括号后缀（分店/品牌备注），用于同一 POI 的名称匹配。
+
+    如「广州酒家(文昌南路总店)」与「广州酒家(文昌南路店)」应为同一商户，
+    精确/子串匹配都会因「总店 vs 店」而漏配，剥掉括号后按主名匹配即可命中。
+    """
+    return re.sub(r"[(（].*?[)）]", "", name).strip()
+
+
 def _pick_poi(pois: list[dict], name: str) -> dict | None:
-    """优先取名称完全一致的 POI，否则取名称互相包含的第一条。"""
+    """优先名称完全一致 → 去掉括号后缀后主名一致 → 名称互相包含。"""
     for p in pois:
         if str(p.get("name", "")).strip() == name:
+            return p
+    base = _strip_branch(name)
+    for p in pois:
+        pn = str(p.get("name", "")).strip()
+        if pn and _strip_branch(pn) == base:
             return p
     for p in pois:
         pn = str(p.get("name", ""))
@@ -340,7 +354,9 @@ def validate_plan(plan: TripPlan, request: TripRequest, client, cache: Cache) ->
                 # 直线 < skip：驾车通常远小于阈值，必然达标，不调 API
             prev = {"name": attr.name, "location": attr.location.model_dump()}
 
-        # 餐饮校验（批次 2.1）：正餐需带坐标且坐标真实
+        # 餐饮校验（批次 2.1）：正餐需带坐标；坐标真实性只以「坐标偏差」衡量，
+        # 不再按店名输出「未能核实」告警——餐厅坐标来自确定性 around_search，
+        # 分店后缀（总店/店）在 text_search 中失配属误报，并非幻觉。
         for m in day.meals:
             if m.type == "breakfast":
                 continue
@@ -355,16 +371,7 @@ def validate_plan(plan: TripPlan, request: TripRequest, client, cache: Cache) ->
                 )
                 continue
             minfo = _get_poi_info(client, cache, m.restaurant, plan.destination)
-            if minfo is None:
-                issues.append(
-                    _issue(
-                        "meal_unverified", day.day, m.restaurant,
-                        f"第{day.day}天「{m.restaurant}」未能在高德地图中核实（店名可能不规范）",
-                        m.location.model_dump(),
-                    )
-                    | {"strong": False}
-                )
-            elif minfo["longitude"] is not None and minfo["latitude"] is not None:
+            if minfo is not None and minfo["longitude"] is not None and minfo["latitude"] is not None:
                 mdist = _coord_distance_m(
                     m.location.longitude, m.location.latitude,
                     minfo["longitude"], minfo["latitude"],

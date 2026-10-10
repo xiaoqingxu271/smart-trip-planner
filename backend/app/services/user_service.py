@@ -94,27 +94,6 @@ def get_username(settings: Settings, user_id: int) -> str | None:
     return row["username"] if row else None
 
 
-def delete_user(settings: Settings, user_id: int) -> None:
-    """注销（批次 E）：删除本人全部行程 + 用户记录，并清理相关 Redis 缓存。
-
-    分享令牌随行程一并删除，历史分享链接自此 404（不留孤儿只读数据）。
-    """
-    ensure_database_once(settings)
-    try:
-        with connection(settings) as conn, conn.cursor() as cur:
-            cur.execute("SELECT id FROM trips WHERE user_id = %s", (user_id,))
-            trip_ids = [row["id"] for row in cur.fetchall()]
-            cur.execute("DELETE FROM trips WHERE user_id = %s", (user_id,))
-            cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
-    except StorageUnavailable:
-        raise AuthError(503, "用户存储（MySQL）不可用") from None
-
-    cache = Cache(settings)
-    for tid in trip_ids:
-        cache.delete(f"trip:detail:{tid}")
-    cache.delete(f"gallery:stars:{user_id}")
-
-
 # ---------- 会话 Token（Redis） ----------
 
 def issue_token(cache: Cache, user_id: int) -> str:

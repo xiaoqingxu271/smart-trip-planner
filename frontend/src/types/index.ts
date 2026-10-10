@@ -116,6 +116,7 @@ export interface TripDetail {
   id: number
   starred: boolean
   is_seed: boolean
+  shared: boolean
   created_at: string
   request: TripRequest
   plan: TripPlan

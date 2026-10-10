@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     # ---------- 行程分享链接（批次 F） ----------
     # 分享令牌的有效期（天）；过期后链接失效，需重新分享。
     share_ttl_days: int = 30
+    # 对外公开基址（拼接分享链接等面向用户的绝对 URL）。
+    # 留空则回退到请求的 Host（本地调试为 127.0.0.1:8000）；公网/域名部署必须显式配置，
+    # 例如 https://trip.example.com，否则分享链接指向本机地址、外部用户无法访问。
+    public_base_url: str = ""
 
     @model_validator(mode="after")
     def _validate_ranges(self) -> "Settings":

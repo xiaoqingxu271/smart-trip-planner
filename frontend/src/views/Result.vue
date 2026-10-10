@@ -5,7 +5,7 @@ import { message } from 'ant-design-vue'
 import AMapLoader from '@amap/amap-jsapi-loader'
 import { exportElementAsPdf, exportElementAsPng } from '@/utils/exporter'
 import { openExternal } from '@/utils/amapNav'
-import { getTripRoutes, getAppConfig, geocode, getTripDetail, imgProxy, replanTrip, createShare, revokeShare, starTrip, swapBackup, tripIcalUrl, updateTrip } from '@/services/api'
+import { getTripRoutes, getAppConfig, geocode, getTripDetail, imgProxy, poiImage, replanTrip, createShare, revokeShare, starTrip, swapBackup, tripIcalUrl, updateTrip } from '@/services/api'
 import type { AppConfig, Attraction, DayRoute, Feedback, TripPlan } from '@/types'
 import AppIcon from '@/components/AppIcon.vue'
 import AmapNavButton from '@/components/AmapNavButton.vue'
@@ -29,6 +29,7 @@ const exporting = ref(false)
 // 服务端持久化状态（收藏）
 const tripId = ref<number | null>(null)
 const starred = ref(false)
+const shared = ref(false) // 是否已生成有效分享链接
 
 // 用户反馈与重规划
 const feedbacks = ref<Feedback[]>([])
@@ -51,6 +52,7 @@ async function doReplan() {
     tripPlan.value = plan
     tripId.value = plan.trip_id ?? null
     starred.value = false
+    shared.value = false // 新版本行程默认未分享
     sessionStorage.setItem('tripPlan', JSON.stringify(plan))
     feedbacks.value = []
     message.success('已根据反馈生成新版本行程')
@@ -313,6 +315,8 @@ async function confirmAdd() {
   addSubmitting.value = true
   try {
     const geo = await geocode(addForm.address.trim(), tripPlan.value?.destination ?? '')
+    // 添加时自动按名称搜索实景配图；失败静默降级为占位图
+    const img = await poiImage(addForm.name.trim(), tripPlan.value?.destination ?? '').catch(() => null)
     working.value?.daily_plans[addTargetDay].attractions.push({
       name: addForm.name.trim(),
       description: addForm.description.trim(),
@@ -322,7 +326,7 @@ async function confirmAdd() {
       ticket_price: 0,
       has_ticket: addForm.has_ticket,
       recommended_reason: '手动添加',
-      image_url: null,
+      image_url: img,
     })
     addModalOpen.value = false
     message.success(`已添加：${addForm.name.trim()}`)
@@ -422,24 +426,27 @@ async function toggleStar() {
   }
 }
 
-async function shareTrip() {
+async function toggleShare() {
   if (!tripId.value) return
+  if (shared.value) {
+    // 已分享 → 撤销
+    try {
+      await revokeShare(tripId.value)
+      shared.value = false
+      message.success('已撤销分享，历史链接即刻失效')
+    } catch (e) {
+      message.error(`撤销分享失败：${(e as Error).message}`)
+    }
+    return
+  }
+  // 未分享 → 生成并复制链接
   try {
     const { share_url } = await createShare(tripId.value)
+    shared.value = true
     await navigator.clipboard.writeText(share_url)
     message.success('分享链接已复制到剪贴板')
   } catch (e) {
     message.error(`分享失败：${(e as Error).message}`)
-  }
-}
-
-async function revokeTripShare() {
-  if (!tripId.value) return
-  try {
-    await revokeShare(tripId.value)
-    message.success('已撤销分享，历史链接即刻失效')
-  } catch (e) {
-    message.error(`撤销分享失败：${(e as Error).message}`)
   }
 }
 
@@ -453,6 +460,7 @@ onMounted(async () => {
       tripPlan.value = detail.plan
       tripId.value = detail.id
       starred.value = detail.starred
+      shared.value = detail.shared
       sessionStorage.setItem('tripPlan', JSON.stringify(detail.plan))
     } catch (e) {
       message.error(`行程加载失败：${(e as Error).message}`)
@@ -514,7 +522,7 @@ onBeforeUnmount(() => {
             <AppIcon name="star" :size="14" :color="starred ? '#e89b3c' : undefined" :filled="starred" />
             {{ starred ? '已收藏' : '收藏' }}
           </a-button>
-          <a-button type="primary" ghost @click="enterEdit">
+          <a-button @click="enterEdit">
             <AppIcon name="pencil" :size="14" />
             编辑行程
           </a-button>
@@ -534,12 +542,14 @@ onBeforeUnmount(() => {
             <AppIcon name="map" :size="14" />
             打开高德地图
           </a-button>
-          <a-button v-if="tripId" @click="shareTrip">
-            分享
-          </a-button>
-          <a-popconfirm v-if="tripId" title="撤销后将使已分享的链接全部失效，确定？" @confirm="revokeTripShare">
-            <a-button>撤销分享</a-button>
+          <a-popconfirm
+            v-if="tripId && shared"
+            title="已分享，点击确认将撤销分享并使链接失效"
+            @confirm="toggleShare"
+          >
+            <a-button type="primary">分享</a-button>
           </a-popconfirm>
+          <a-button v-else-if="tripId" @click="toggleShare">分享</a-button>
         </template>
       </div>
     </header>
@@ -581,21 +591,6 @@ onBeforeUnmount(() => {
           <template #message>
             此行程是根据你的反馈对原行程重新规划生成的新版本。
             <a @click="router.push({ path: '/result', query: { id: String(tripPlan.parent_id) } })">查看上一版</a>
-          </template>
-        </a-alert>
-
-        <a-alert
-          v-if="tripPlan.warnings?.length"
-          type="warning"
-          show-icon
-          class="no-export"
-          style="margin-bottom: 16px"
-        >
-          <template #message>以下问题未能完全自动修复，请留意（可标记后重新规划）：</template>
-          <template #description>
-            <ul style="margin: 0; padding-left: 18px">
-              <li v-for="(w, i) in tripPlan.warnings" :key="i">{{ w }}</li>
-            </ul>
           </template>
         </a-alert>
 
@@ -663,15 +658,6 @@ onBeforeUnmount(() => {
                         <a-tag v-else color="green">免费</a-tag>
                         <a-tag v-if="attr.start_time && attr.end_time" color="blue">{{ attr.start_time }}–{{ attr.end_time }}</a-tag>
                         <a-tag><AppIcon name="clock" :size="11" color="#67756d" /> {{ attr.duration }}</a-tag>
-                        <AmapNavButton :name="attr.name" :location="attr.location" :city="tripPlan.destination" />
-                        <a-dropdown v-if="tripId && !editing" class="no-export">
-                          <a-button size="small" type="text" class="fb-btn">有问题？</a-button>
-                          <template #overlay>
-                            <a-menu @click="({ key }) => addFeedback('attraction', attr.name, key as string)">
-                              <a-menu-item v-for="r in FEEDBACK_OPTIONS.attraction" :key="r">{{ r }}</a-menu-item>
-                            </a-menu>
-                          </template>
-                        </a-dropdown>
                         <a-dropdown v-if="tripId && !editing && (day.backup_attractions?.length ?? 0) > 0" class="no-export">
                           <a-button size="small" type="text" class="fb-btn">
                             <AppIcon name="clover" :size="12" color="#6b4fa0" />
@@ -695,6 +681,17 @@ onBeforeUnmount(() => {
                         <AppIcon name="map-pin" :size="12" color="#8a978f" />
                         {{ attr.address }}
                       </p>
+                      <div class="poi-actions no-export">
+                        <AmapNavButton :name="attr.name" :location="attr.location" :city="tripPlan.destination" />
+                        <a-dropdown v-if="tripId && !editing">
+                          <a-button size="small" type="text" class="fb-btn">有问题？</a-button>
+                          <template #overlay>
+                            <a-menu @click="({ key }) => addFeedback('attraction', attr.name, key as string)">
+                              <a-menu-item v-for="r in FEEDBACK_OPTIONS.attraction" :key="r">{{ r }}</a-menu-item>
+                            </a-menu>
+                          </template>
+                        </a-dropdown>
+                      </div>
                     </div>
                     <div v-if="editing" class="attr-ops no-export">
                       <a-button size="small" :disabled="attrIdx === 0" @click="moveAttraction(dayIdx, attrIdx, -1)">↑</a-button>
@@ -740,8 +737,16 @@ onBeforeUnmount(() => {
                     <div>
                       <div class="meal-name">
                         {{ meal.restaurant }}
+                      </div>
+                      <div class="meal-meta">
+                        {{ MEAL_META[meal.type]?.label }}
+                        <template v-if="meal.cuisine"> · {{ meal.cuisine }}</template>
+                        <template v-if="meal.cost"> · 人均 {{ money(meal.cost) }}（估算）</template>
+                        <template v-if="meal.specialty"> · 推荐 {{ meal.specialty }}</template>
+                      </div>
+                      <div class="poi-actions no-export">
                         <AmapNavButton :name="meal.restaurant" :location="meal.location" :city="tripPlan.destination" />
-                        <a-dropdown v-if="tripId && !editing" class="no-export">
+                        <a-dropdown v-if="tripId && !editing">
                           <a-button size="small" type="text" class="fb-btn">有问题？</a-button>
                           <template #overlay>
                             <a-menu @click="({ key }) => addFeedback('meal', meal.restaurant, key as string)">
@@ -749,12 +754,6 @@ onBeforeUnmount(() => {
                             </a-menu>
                           </template>
                         </a-dropdown>
-                      </div>
-                      <div class="meal-meta">
-                        {{ MEAL_META[meal.type]?.label }}
-                        <template v-if="meal.cuisine"> · {{ meal.cuisine }}</template>
-                        <template v-if="meal.cost"> · 人均 {{ money(meal.cost) }}（估算）</template>
-                        <template v-if="meal.specialty"> · 推荐 {{ meal.specialty }}</template>
                       </div>
                     </div>
                   </div>
@@ -775,15 +774,6 @@ onBeforeUnmount(() => {
                     <div class="hotel-name">
                       {{ day.hotel.name }}
                       <a-rate :value="day.hotel.rating / 1" disabled allow-half style="font-size: 12px; margin-left: 8px" />
-                      <AmapNavButton :name="day.hotel.name" :location="day.hotel.location" :city="tripPlan.destination" />
-                      <a-dropdown v-if="tripId && !editing" class="no-export">
-                        <a-button size="small" type="text" class="fb-btn">有问题？</a-button>
-                        <template #overlay>
-                          <a-menu @click="({ key }) => addFeedback('hotel', day.hotel!.name, key as string)">
-                            <a-menu-item v-for="r in FEEDBACK_OPTIONS.hotel" :key="r">{{ r }}</a-menu-item>
-                          </a-menu>
-                        </template>
-                      </a-dropdown>
                     </div>
                     <div class="hotel-meta">
                       {{ day.hotel.hotel_type }} ·
@@ -792,6 +782,17 @@ onBeforeUnmount(() => {
                       </template>
                       <template v-else>{{ money(day.hotel.price_per_night) }}/晚（估算）</template>
                       <template v-if="day.hotel.address"> · {{ day.hotel.address }}</template>
+                    </div>
+                    <div class="poi-actions no-export">
+                      <AmapNavButton :name="day.hotel.name" :location="day.hotel.location" :city="tripPlan.destination" />
+                      <a-dropdown v-if="tripId && !editing">
+                        <a-button size="small" type="text" class="fb-btn">有问题？</a-button>
+                        <template #overlay>
+                          <a-menu @click="({ key }) => addFeedback('hotel', day.hotel!.name, key as string)">
+                            <a-menu-item v-for="r in FEEDBACK_OPTIONS.hotel" :key="r">{{ r }}</a-menu-item>
+                          </a-menu>
+                        </template>
+                      </a-dropdown>
                     </div>
                   </div>
                 </div>
@@ -1586,12 +1587,14 @@ onBeforeUnmount(() => {
 .b-label {
   font-size: 13px;
   color: var(--ink-500);
+  white-space: nowrap;
 }
 
 .b-value {
   font-size: 21px;
   font-weight: 800;
   color: var(--ink-900);
+  white-space: nowrap;
 }
 
 .b-total {
@@ -1698,6 +1701,13 @@ onBeforeUnmount(() => {
 }
 
 /* ---------- 反馈与重规划 ---------- */
+.poi-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
 .fb-btn {
   padding: 0 4px;
   font-size: 12px;

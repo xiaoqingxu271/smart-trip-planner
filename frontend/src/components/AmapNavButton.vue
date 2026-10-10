@@ -38,12 +38,19 @@ async function go() {
   <a-tooltip title="在高德地图中导航">
     <a-button size="small" type="text" class="nav-btn no-export" :loading="resolving" @click="go">
       <AppIcon v-if="!resolving" name="car" :size="13" color="#3f8765" />
+      导航
     </a-button>
   </a-tooltip>
 </template>
 
 <style scoped>
 .nav-btn {
-  padding: 0 5px;
+  padding: 0 4px;
+  font-size: 12px;
+  color: #3f8765;
+}
+
+.nav-btn:hover {
+  color: #275c45 !important;
 }
 </style>
