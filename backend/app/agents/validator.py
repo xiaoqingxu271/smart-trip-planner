@@ -24,7 +24,6 @@ from math import asin, cos, radians, sin, sqrt
 from typing import Any
 
 from ..models.schemas import TripPlan, TripRequest
-from ..services.amap_pacer import pace
 from ..storage.cache import Cache
 
 _OPENTIME_TTL = 7 * 24 * 3600
@@ -95,17 +94,17 @@ def _pick_poi(pois: list[dict], name: str) -> dict | None:
     return None
 
 
-def _get_poi_info(client, cache: Cache, name: str, city: str) -> dict | None:
-    """核实景点用的 POI 信息：{"name","longitude","latitude","opentime"}；未找到返回 None。
+def _get_poi_info(client, cache: Cache, name: str, city: str, need_opentime: bool = True) -> dict | None:
+    """核实 POI 信息：{"name","longitude","latitude","opentime"}；未找到返回 None。
 
-    text_search 决定真实性与坐标基准 → search_detail 补 open_time。
+    text_search 决定真实性与坐标基准 → search_detail 补 open_time（仅 need_opentime=True 时）。
+    餐厅等只做坐标比对、不判断闭馆的对象可传 False，省掉一次 detail 调用。
     负缓存"-"表示确认查无此 POI；缓存 key 为 poi:info2:（旧 poi:ot2: 只存
     开放时间文本，无法支撑坐标比对，7 天内自然过期）。
     """
 
     def fetch():
         try:
-            pace()
             r = client.call_tool("maps_text_search", {"keywords": name, "city": city})
             pois = json.loads(r).get("pois") or []
             poi = _pick_poi(pois, name)
@@ -119,8 +118,7 @@ def _get_poi_info(client, cache: Cache, name: str, city: str) -> dict | None:
                 "opentime": None,
             }
             pid = poi.get("id")
-            if pid:
-                pace()
+            if pid and need_opentime:
                 d = client.call_tool("maps_search_detail", {"id": pid})
                 data = json.loads(d)
                 plist = data.get("pois") or []
@@ -180,7 +178,6 @@ def _get_distance(client, cache: Cache, loc1: dict, loc2: dict) -> int | None:
             pass
 
     try:
-        pace()
         r = client.call_tool(
             "maps_distance",
             {
@@ -370,7 +367,7 @@ def validate_plan(plan: TripPlan, request: TripRequest, client, cache: Cache) ->
                     | {"strong": False}
                 )
                 continue
-            minfo = _get_poi_info(client, cache, m.restaurant, plan.destination)
+            minfo = _get_poi_info(client, cache, m.restaurant, plan.destination, need_opentime=False)
             if minfo is not None and minfo["longitude"] is not None and minfo["latitude"] is not None:
                 mdist = _coord_distance_m(
                     m.location.longitude, m.location.latitude,
@@ -433,7 +430,6 @@ def search_candidates(
 ) -> list[dict[str, Any]]:
     """搜索真实替代候选：有坐标走周边搜（3km），否则城市级关键词搜。"""
     try:
-        pace()
         if location:
             r = client.call_tool(
                 "maps_around_search",

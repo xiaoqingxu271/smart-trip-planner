@@ -20,6 +20,7 @@ import hashlib
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -87,7 +88,11 @@ class ImageService:
     # ---------- 对外入口 ----------
 
     def enrich(self, plan: TripPlan) -> None:
-        """为行程中所有景点/餐厅/酒店填充 image_url（全局节拍限速 + 缓存）。"""
+        """为行程中所有景点/餐厅/酒店填充 image_url（全局节拍限速 + 缓存）。
+
+        逐目标并发执行：真实高德请求受全局限速约束，但并发可重叠网络往返，
+        配合令牌桶节拍器在限速内并行消耗配额。每个目标写的是独立对象字段，无共享写。
+        """
         targets: list[tuple[Any, str]] = []
         for day in plan.daily_plans:
             for a in day.attractions:
@@ -96,11 +101,18 @@ class ImageService:
                 targets.append((m, m.restaurant))
             if day.hotel:
                 targets.append((day.hotel, day.hotel.name))
-        for obj, name in targets:
+        if not targets:
+            return
+
+        def _fill_one(item: tuple[Any, str]) -> None:
+            obj, name = item
             try:
                 self._fill(obj, name, plan.destination)
             except Exception:  # noqa: BLE001  单张图失败不影响整体
                 pass
+
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            list(ex.map(_fill_one, targets))
 
     # ---------- 内部实现 ----------
 

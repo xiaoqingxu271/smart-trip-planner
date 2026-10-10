@@ -1,7 +1,7 @@
 """校验器回归：真实性 / 闭馆日 / 距离 / 密度（FakeClient，不打真实高德 API）。"""
 import json
 
-import app.agents.validator as validator
+import app.services.amap_pacer as pacer
 import pytest
 from app.agents.validator import validate_plan
 from app.models.schemas import Attraction, DayPlan, Location, TripPlan, TripRequest
@@ -54,7 +54,7 @@ def attr(name, lon, lat):
 
 @pytest.fixture(autouse=True)
 def no_pace(monkeypatch):
-    monkeypatch.setattr(validator, "pace", lambda *a, **k: None)
+    monkeypatch.setattr(pacer, "pace", lambda *a, **k: None)
 
 
 def kinds(issues):

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -109,30 +110,33 @@ def _drive_route(amap_key: str, cache, orig: dict, dest: dict) -> dict[str, Any]
 
 
 def compute_day_routes(amap_key: str, cache, plan: TripPlan) -> dict[str, Any]:
-    """按天串接景点坐标，返回前端绘图所需的逐段折线与汇总信息。"""
+    """按天串接景点坐标，返回前端绘图所需的逐段折线与汇总信息。
+
+    各天相互独立，并发计算以重叠高德 driving 往返（受全局限速约束，不突破 QPS）。
+    """
     if not amap_key:
         return {"routes": []}
-    routes: list[dict[str, Any]] = []
-    for day in plan.daily_plans:
+
+    def _day_routes(day) -> dict[str, Any] | None:
         pts = [(a.name, a.location.model_dump()) for a in day.attractions]
         if len(pts) < 2:
-            continue
+            return None
         legs: list[dict[str, Any]] = []
         for (name1, loc1), (name2, loc2) in zip(pts, pts[1:]):
             seg = _drive_route(amap_key, cache, loc1, loc2)
             if seg:
-                seg = {"from": name1, "to": name2, **seg}
-                legs.append(seg)
+                legs.append({"from": name1, "to": name2, **seg})
         if not legs:
-            continue
-        routes.append(
-            {
-                "day": day.day,
-                "theme": day.theme,
-                "distance_m": sum(l["distance"] or 0 for l in legs),
-                "duration_s": sum(l["duration"] or 0 for l in legs),
-                "taxi_cost": round(sum(l["taxi_cost"] or 0 for l in legs), 1),
-                "legs": legs,
-            }
-        )
-    return {"routes": routes}
+            return None
+        return {
+            "day": day.day,
+            "theme": day.theme,
+            "distance_m": sum(l["distance"] or 0 for l in legs),
+            "duration_s": sum(l["duration"] or 0 for l in legs),
+            "taxi_cost": round(sum(l["taxi_cost"] or 0 for l in legs), 1),
+            "legs": legs,
+        }
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        results = list(ex.map(_day_routes, plan.daily_plans))
+    return {"routes": [r for r in results if r]}

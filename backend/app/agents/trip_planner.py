@@ -19,6 +19,7 @@ import re
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from datetime import date
 from typing import Callable
@@ -29,7 +30,6 @@ from pydantic import ValidationError
 from ..config import Settings
 from ..models.schemas import DayPlan, Feedback, TripPlan, TripRequest
 from ..services import metrics
-from ..services.amap_pacer import pace
 from ..services.geo import centroid, cluster_centroids
 from ..storage.cache import Cache
 from .mcp_tool import MCPStdioClient, MCPTool
@@ -215,39 +215,43 @@ class TripPlannerAgent:
         notify("started", "已受理，多智能体流水线启动")
         user_brief = self._format_request(request)
 
-        logger.info("[TripPlanner] ① 搜索景点：%s", request.destination)
-        attractions_text = self._run_step(
-            self.attraction_agent,
-            f"目的地：{request.destination}\n用户需求：{user_brief}\n请搜索并整理景点候选清单。",
+        # 景点搜索与天气查询相互独立，并行执行以压缩 LLM 串行等待（批次 H）；
+        # 二者共享同一 MCP 子进程（其内部 _io_lock 串行化工具调用），真正重叠的是 LLM 网络往返。
+        logger.info("[TripPlanner] ① 搜索景点 + 查询天气（并行）")
+        attraction_input = f"目的地：{request.destination}\n用户需求：{user_brief}\n请搜索并整理景点候选清单。"
+        weather_input = (
+            f"目的地：{request.destination}，出发日期：{request.start_date or date.today().isoformat()}"
+            f"\n请查询该城市天气预报并按格式整理。"
         )
-        n_candidates = sum(1 for line in attractions_text.splitlines() if line.count("|") >= 4)
-        notify("attractions", f"景点搜索完成，共 {n_candidates} 个候选", {"count": n_candidates})
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            fut_attr = ex.submit(self._run_step, self.attraction_agent, attraction_input)
+            fut_weather = ex.submit(self._run_step, self.weather_agent, weather_input)
 
-        # ② 酒店：围绕景点候选质心 around_search（确定性），先景点后酒店（批次 2.2）
-        coords = self._parse_candidate_coords(attractions_text)
-        center = centroid(coords)
-        logger.info("[TripPlanner] ② 酒店搜索（景点簇质心=%s）", center or "未知")
-        if center:
-            hotel_text = self._hotel_candidates(center)
-            if not hotel_text:
+            attractions_text = fut_attr.result()
+            n_candidates = sum(1 for line in attractions_text.splitlines() if line.count("|") >= 4)
+            notify("attractions", f"景点搜索完成，共 {n_candidates} 个候选", {"count": n_candidates})
+
+            # ② 酒店：围绕景点候选质心 around_search（确定性），先景点后酒店（批次 2.2）
+            coords = self._parse_candidate_coords(attractions_text)
+            center = centroid(coords)
+            logger.info("[TripPlanner] ② 酒店搜索（景点簇质心=%s）", center or "未知")
+            if center:
+                hotel_text = self._hotel_candidates(center)
+                if not hotel_text:
+                    hotel_text = self._run_step(
+                        self.hotel_agent,
+                        f"目的地：{request.destination}\n用户需求：{user_brief}\n请搜索并整理酒店候选清单。",
+                    )
+            else:
                 hotel_text = self._run_step(
                     self.hotel_agent,
                     f"目的地：{request.destination}\n用户需求：{user_brief}\n请搜索并整理酒店候选清单。",
                 )
-        else:
-            hotel_text = self._run_step(
-                self.hotel_agent,
-                f"目的地：{request.destination}\n用户需求：{user_brief}\n请搜索并整理酒店候选清单。",
-            )
-        notify("hotel", "酒店候选已就绪")
+            notify("hotel", "酒店候选已就绪")
 
-        logger.info("[TripPlanner] ③ 查询天气")
-        weather_text = self._run_step(
-            self.weather_agent,
-            f"目的地：{request.destination}，出发日期：{request.start_date or date.today().isoformat()}"
-            f"\n请查询该城市天气预报并按格式整理。",
-        )
-        notify("weather", "目的地天气预报已获取")
+            # ③ 天气结果（与景点并行，此刻应已就绪）
+            weather_text = fut_weather.result()
+            notify("weather", "目的地天气预报已获取")
 
         # ④ 正餐候选：确定性 around_search，按天聚类（批次 2.1）
         logger.info("[TripPlanner] ④ 搜索正餐候选（按景点簇）")
@@ -572,7 +576,6 @@ class TripPlannerAgent:
     def _around_pois(self, keywords: str, location: tuple[float, float], radius: int, limit: int = 8) -> list[dict]:
         """确定性 around_search：返回 [{name, type, address, longitude, latitude}] 列表。"""
         try:
-            pace()
             r = self.mcp_tool.client.call_tool(
                 "maps_around_search",
                 {
