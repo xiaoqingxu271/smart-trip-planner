@@ -48,17 +48,18 @@ describe('imgProxy 图片代理 URL', () => {
     expect(url.startsWith('/api/utils/image?u=')).toBe(true)
   })
 
-  it('有 Token 时附带 token 查询参数', () => {
+  it('有 Token 时不携带 token 参数（避免泄露到 URL/日志）', () => {
     setToken('tok_xyz')
     const url = imgProxy('https://store.is.autonavi.com/a.jpg')!
-    expect(url).toContain('token=tok_xyz')
+    expect(url).not.toContain('token')
+    expect(url.startsWith('/api/utils/image?u=')).toBe(true)
   })
 
-  it('两种凭证可同时携带', () => {
+  it('两种凭证时仅携带 code，token 不拼进 URL', () => {
     setAccessCode('pw')
     setToken('tok')
     const url = imgProxy('https://a.com/b.png')!
     expect(url).toContain('code=pw')
-    expect(url).toContain('token=tok')
+    expect(url).not.toContain('token')
   })
 })
